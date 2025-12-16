@@ -51,11 +51,14 @@ app = FastAPI(title="CA RAG Chatbot API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_ORIGIN],  # relax for demo
+    allow_origins=[
+        "https://ca-frontend-sooty.vercel.app"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
 
 # ---------- DB & external clients ----------
 pwd_context = CryptContext(
