@@ -1,0 +1,28 @@
+fastapi 
+uvicorn[standard] 
+python-multipart 
+pymongo 
+motor 
+python-jose[cryptography] 
+passlib 
+httpx 
+pydantic 
+pinecone 
+pypdf 
+pydantic-settings
+
+
+
+# HTTP client
+httpx>=0.24
+
+
+# PDF / extraction / OCR / images
+pypdf>=3.15
+pdfplumber>=0.7.6
+pdf2image>=1.16.0
+Pillow>=9.5.0
+pytesseract>=0.3.10
+
+# Utility
+python-dotenv>=1.0
