@@ -67,10 +67,17 @@ pwd_context = CryptContext(
     deprecated="auto",
 )
 
-mongo_client = AsyncIOMotorClient(settings.MONGO_URI)
+import ssl
+
+mongo_client = AsyncIOMotorClient(
+    settings.MONGO_URI,
+    tls=True,
+    tlsAllowInvalidCertificates=True,
+    serverSelectionTimeoutMS=5000,
+)
+
 db = mongo_client[settings.MONGO_DB]
-users_collection = db["users"]
-docs_collection = db["documents"]
+
 
 pinecone_client = pinecone.Pinecone(api_key=settings.PINECONE_API_KEY)
 index = pinecone_client.Index(settings.PINECONE_INDEX)
