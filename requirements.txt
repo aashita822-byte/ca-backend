@@ -1,28 +1,31 @@
-fastapi 
-uvicorn[standard] 
-python-multipart 
-pymongo 
-motor 
-python-jose[cryptography] 
-passlib 
-httpx 
-pydantic 
-pinecone 
-pypdf 
-pydantic-settings
+# Core API
+fastapi
+uvicorn
+python-multipart
 
+# MongoDB (Atlas-safe)
+pymongo[srv]
+motor
 
+# Auth & Security
+python-jose[cryptography]
+passlib[bcrypt]
 
-# HTTP client
+# HTTP
 httpx>=0.24
 
+# Data validation
+pydantic
+pydantic-settings
+python-dotenv
 
-# PDF / extraction / OCR / images
+# Vector DB
+pinecone
+
+# PDF text extraction (TEXT ONLY – stable)
 pypdf>=3.15
-pdfplumber>=0.7.6
-pdf2image>=1.16.0
+pdfplumber>=0.10
+
+# Images (for future use, safe)
 Pillow>=9.5.0
 pytesseract>=0.3.10
-
-# Utility
-python-dotenv>=1.0
