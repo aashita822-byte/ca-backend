@@ -52,7 +52,9 @@ app = FastAPI(title="CA RAG Chatbot API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://ca-frontend-sooty.vercel.app"
+        "https://ca-frontend-sooty.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:5173",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -77,7 +79,8 @@ mongo_client = AsyncIOMotorClient(
 )
 
 db = mongo_client[settings.MONGO_DB]
-
+users_collection = db["users"]
+docs_collection = db["documents"]
 
 pinecone_client = pinecone.Pinecone(api_key=settings.PINECONE_API_KEY)
 index = pinecone_client.Index(settings.PINECONE_INDEX)
