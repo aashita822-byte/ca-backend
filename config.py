@@ -19,5 +19,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
+    class Settings(BaseSettings):
+        OPENAI_API_KEY: str
 
 settings = Settings()
