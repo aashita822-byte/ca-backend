@@ -216,94 +216,111 @@ def sanitize_id(s: str, max_len: int = 200) -> str:
 
 
 # ---------- Embedding & LLM (robust) ----------
-async def embed_texts(texts: List[str]) -> List[List[float]]:
-    """
-    Robust embedding call:
-      - Splits into smaller batches (EMBED_BATCH_SIZE)
-      - Retries transient failures with exponential backoff
-      - Uses EMBED_TIMEOUT_SECS per request
-    Returns embeddings in same order as `texts`.
-    """
-    if not texts:
-        return []
+# async def embed_texts(texts: List[str]) -> List[List[float]]:
+#     """
+#     Robust embedding call:
+#       - Splits into smaller batches (EMBED_BATCH_SIZE)
+#       - Retries transient failures with exponential backoff
+#       - Uses EMBED_TIMEOUT_SECS per request
+#     Returns embeddings in same order as `texts`.
+#     """
+#     if not texts:
+#         return []
 
-    url = "https://openrouter.ai/api/v1/embeddings"
-    headers = {
-        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
+#     url = "https://openrouter.ai/api/v1/embeddings"
+#     headers = {
+#         "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+#         "Content-Type": "application/json",
+#     }
 
-    # split into batches preserving order
-    batches = [texts[i : i + EMBED_BATCH_SIZE] for i in range(0, len(texts), EMBED_BATCH_SIZE)]
-    results: List[List[float]] = []
+#     # split into batches preserving order
+#     batches = [texts[i : i + EMBED_BATCH_SIZE] for i in range(0, len(texts), EMBED_BATCH_SIZE)]
+#     results: List[List[float]] = []
 
-    async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_SECS) as client:
-        for batch_idx, batch_texts in enumerate(batches):
-            payload = {"model": settings.EMBEDDING_MODEL, "input": batch_texts}
-            attempt = 0
-            while True:
-                attempt += 1
-                try:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    emb_batch = [d["embedding"] for d in data["data"]]
-                    if len(emb_batch) != len(batch_texts):
-                        raise HTTPException(status_code=502, detail="Embedding response length mismatch")
-                    results.extend(emb_batch)
-                    break
-                except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
-                    # network/transient errors -> retry
-                    if attempt >= EMBED_MAX_RETRIES:
-                        raise HTTPException(
-                            status_code=504,
-                            detail=f"Embedding request timed out after {EMBED_MAX_RETRIES} attempts (batch {batch_idx}). Last error: {str(exc)}",
-                        )
-                    backoff = EMBED_BACKOFF_BASE ** (attempt - 1)
-                    jitter = (0.1 * backoff) * (0.5 - (time.time() % 1))
-                    await asyncio.sleep(backoff + jitter)
-                    continue
-                except httpx.HTTPStatusError as exc:
-                    status = exc.response.status_code
-                    text = ""
-                    try:
-                        text = exc.response.text
-                    except Exception:
-                        pass
-                    # Retry on 5xx
-                    if 500 <= status < 600 and attempt < EMBED_MAX_RETRIES:
-                        await asyncio.sleep(EMBED_BACKOFF_BASE ** (attempt - 1))
-                        continue
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"Embedding service returned status {status}: {text[:200]}",
-                    )
-                except Exception as exc:
-                    raise HTTPException(status_code=500, detail=f"Embedding failed: {str(exc)}")
+#     async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_SECS) as client:
+#         for batch_idx, batch_texts in enumerate(batches):
+#             payload = {"model": settings.EMBEDDING_MODEL, "input": batch_texts}
+#             attempt = 0
+#             while True:
+#                 attempt += 1
+#                 try:
+#                     resp = await client.post(url, headers=headers, json=payload)
+#                     resp.raise_for_status()
+#                     data = resp.json()
+#                     emb_batch = [d["embedding"] for d in data["data"]]
+#                     if len(emb_batch) != len(batch_texts):
+#                         raise HTTPException(status_code=502, detail="Embedding response length mismatch")
+#                     results.extend(emb_batch)
+#                     break
+#                 except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+#                     # network/transient errors -> retry
+#                     if attempt >= EMBED_MAX_RETRIES:
+#                         raise HTTPException(
+#                             status_code=504,
+#                             detail=f"Embedding request timed out after {EMBED_MAX_RETRIES} attempts (batch {batch_idx}). Last error: {str(exc)}",
+#                         )
+#                     backoff = EMBED_BACKOFF_BASE ** (attempt - 1)
+#                     jitter = (0.1 * backoff) * (0.5 - (time.time() % 1))
+#                     await asyncio.sleep(backoff + jitter)
+#                     continue
+#                 except httpx.HTTPStatusError as exc:
+#                     status = exc.response.status_code
+#                     text = ""
+#                     try:
+#                         text = exc.response.text
+#                     except Exception:
+#                         pass
+#                     # Retry on 5xx
+#                     if 500 <= status < 600 and attempt < EMBED_MAX_RETRIES:
+#                         await asyncio.sleep(EMBED_BACKOFF_BASE ** (attempt - 1))
+#                         continue
+#                     raise HTTPException(
+#                         status_code=502,
+#                         detail=f"Embedding service returned status {status}: {text[:200]}",
+#                     )
+#                 except Exception as exc:
+#                     raise HTTPException(status_code=500, detail=f"Embedding failed: {str(exc)}")
 
-    return results
+#     return results
 
 
-async def embed_single(text: str) -> List[float]:
-    embs = await embed_texts([text])
-    return embs[0]
+# async def embed_single(text: str) -> List[float]:
+#     embs = await embed_texts([text])
+#     return embs[0]
+async def embed_texts(texts: list[str]) -> list[list[float]]:
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.openai.com/v1/embeddings",
+            headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
+            json={"model": "text-embedding-3-small", "input": texts},
+        )
+        r.raise_for_status()
+        return [e["embedding"] for e in r.json()["data"]]
+
+
+async def embed_single(text: str) -> list[float]:
+    return (await embed_texts([text]))[0]
 
 
 async def call_llm(messages: List[dict]) -> str:
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = "https://api.openai.com/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+
     payload = {
-        "model": settings.LLM_MODEL,
+        "model": "gpt-4o-mini",  # fast + cheap + stable
         "messages": messages,
+        "temperature": 0.3,
     }
+
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
 
 
 # ---------- Helpers ----------
