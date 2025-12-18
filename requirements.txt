@@ -11,7 +11,7 @@ pinecone
 pypdf 
 pydantic-settings
 
-
+openai>=1.12.0
 
 # HTTP client
 httpx>=0.24
