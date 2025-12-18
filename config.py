@@ -15,11 +15,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
 
     FRONTEND_ORIGIN: str = "*"
-
+    OPENAI_API_KEY: str
+    
     class Config:
         env_file = ".env"
 
-    class Settings(BaseSettings):
-        OPENAI_API_KEY: str
+    
+        
 
 settings = Settings()
