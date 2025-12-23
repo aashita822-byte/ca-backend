@@ -247,76 +247,176 @@ def rerank(matches: list[dict]) -> list[dict]:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
-    if not await is_ca_related_question(req.message):
-        return ChatResponse(
-            answer="This assistant is only for CA-related questions.",
-            sources=[]
-        )
+    # =====================================================
+    # CONFIG
+    # =====================================================
+    MAX_CONTEXT_CHARS = 6000
+    TOP_SCORE_THRESHOLD = 0.55  # confidence threshold for RAG
 
-    if is_basic_ca_question(req.message):
+    # Always initialize (BUG FIX)
+    context: List[str] = []
+    sources: List[dict] = []
+
+    # =====================================================
+    # 1️⃣ GATEKEEPER — NON-CA QUESTIONS
+    # =====================================================
+    if not await is_ca_related_question(req.message):
         answer = await call_llm([
-            {"role": "system", "content": "You are an Indian CA tutor."},
+            {
+                "role": "system",
+                "content": (
+                    "You are a polite assistant. "
+                    "This system is designed mainly for Indian CA-related questions. "
+                    "Answer briefly using general knowledge."
+                )
+            },
             {"role": "user", "content": req.message},
         ])
-        return ChatResponse(answer=answer, sources=[])
 
-    query_emb = await embed_single(req.message)
+        return ChatResponse(
+            answer=answer,
+            sources=[{
+                "doc_title": "General response",
+                "note": "Question is not related to CA syllabus",
+                "confidence": "low",
+            }]
+        )
 
-    res = index.query(
-        vector=query_emb,
+    # =====================================================
+    # 2️⃣ BASIC CA QUESTIONS (LLM ONLY, BUT SOURCES SHOWN)
+    # =====================================================
+    if is_basic_ca_question(req.message):
+        answer = await call_llm([
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior Chartered Accountant and ICAI-level tutor. "
+                    "Explain the concept clearly in short, exam-oriented language. "
+                    "Do not go beyond syllabus expectations."
+                )
+            },
+            {"role": "user", "content": req.message},
+        ])
+
+        return ChatResponse(
+            answer=answer,
+            sources=[{
+                "doc_title": "Conceptual explanation",
+                "note": "Basic CA concept answered without document reference",
+                "confidence": "medium",
+            }]
+        )
+
+    # =====================================================
+    # 3️⃣ RAG — PINECONE RETRIEVAL
+    # =====================================================
+    query_embedding = await embed_single(req.message)
+
+    result = index.query(
+        vector=query_embedding,
         top_k=10,
         include_metadata=True,
         namespace=RAG_NAMESPACE,
     )
 
-    matches = rerank(res.get("matches", []))
-    system_prompt = f"""
-                You are a highly experienced Chartered Accountant (CA) and ICAI-level tutor.
-                
-                You must strictly follow these rules:
-                1. Answer ONLY using the information provided in the CONTEXT below.
-                2. Do NOT use any outside knowledge.
-                3. If the answer is NOT clearly available in the context, respond with:
-                   "Your intelligence and information but also mention that source is Open ai LLM."
-                4. Explain the answer in clear, exam-oriented language suitable for CA students.
-                5. Use structured points or steps wherever applicable.
-                6. Do NOT hallucinate sections, rules, amendments, or examples.
-                
-                CONTEXT:
-                {chr(10).join(context)}
-                
-                Answer the following question:
-                """
+    matches = rerank(result.get("matches", []))
 
-    if not matches:
+    # =====================================================
+    # 4️⃣ WEAK / NO MATCH → LLM FALLBACK (LABELED)
+    # =====================================================
+    if not matches or matches[0]["final_score"] < TOP_SCORE_THRESHOLD:
         answer = await call_llm([
-            {"role": "system", "content": system_prompt},
+            {
+                "role": "system",
+                "content": (
+                    "You are a highly experienced Chartered Accountant (CA). "
+                    "Answer the question clearly using general CA knowledge. "
+                    "This answer is NOT based on uploaded ICAI documents."
+                )
+            },
             {"role": "user", "content": req.message},
         ])
-        return ChatResponse(answer=answer, sources=[])
 
-    context, sources = [], []
-    total = 0
+        answer += (
+            "\n\n⚠️ Note: This answer is generated by the AI model and "
+            "is not directly sourced from uploaded ICAI material."
+        )
+
+        return ChatResponse(
+            answer=answer,
+            sources=[{
+                "doc_title": "LLM Generated Answer",
+                "note": "No sufficiently relevant document was found",
+                "confidence": "low",
+            }]
+        )
+
+    # =====================================================
+    # 5️⃣ BUILD CONTEXT + SOURCES (DOCUMENT-BASED)
+    # =====================================================
+    total_chars = 0
+
     for m in matches[:6]:
         meta = m["metadata"]
-        block = f"[{meta['source']} | Page {meta['page']}]\n{meta['text']}"
-        if total + len(block) > 6000:
+        text = meta.get("text", "").strip()
+        if not text:
+            continue
+
+        block = (
+            f"[Document: {meta.get('source')} | Page {meta.get('page')}]\n"
+            f"{text}"
+        )
+
+        if total_chars + len(block) > MAX_CONTEXT_CHARS:
             break
+
         context.append(block)
-        total += len(block)
+        total_chars += len(block)
+
+        # OLD FRONTEND-COMPATIBLE SOURCE FORMAT
         sources.append({
-            "source": meta["source"],
-            "page": meta["page"],
-            "level": meta["level"],
-            "doc_type": meta["doc_type"],
+            "doc_title": meta.get("source"),
+            "page_start": meta.get("page"),
+            "level": meta.get("level"),
+            "subject": meta.get("subject"),
+            "doc_type": meta.get("doc_type"),
+            "confidence": round(m["final_score"], 2),
         })
 
+    # =====================================================
+    # 6️⃣ STRONG ICAI-GRADE PROMPT (DOCUMENT ANSWER)
+    # =====================================================
+    system_prompt = f"""
+        You are a highly experienced Chartered Accountant (CA) and ICAI-level examiner.
+        
+        STRICT RULES (MANDATORY):
+        1. Answer ONLY using the information provided in the CONTEXT below.
+        2. Do NOT use any external knowledge or assumptions.
+        3. If the answer is NOT clearly available in the context, respond EXACTLY with:
+           "This information is not available in the provided syllabus material."
+        4. Write the answer in clear, exam-oriented language suitable for CA students.
+        5. Use structured points, headings, or steps wherever applicable.
+        6. Do NOT hallucinate sections, rules, amendments, case laws, or examples.
+        7. If tables or figures are referenced in context, mention them explicitly.
+        8. End the answer with a short section titled: "Sources Used".
+        
+        CONTEXT:
+        {chr(10).join(context)}
+        """
+
     answer = await call_llm([
-        {"role": "system", "content": "Answer using the context below:\n\n" + "\n\n".join(context)},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": req.message},
     ])
 
-    return ChatResponse(answer=answer, sources=sources)
+    # =====================================================
+    # 7️⃣ FINAL RESPONSE (DOCUMENT-BASED)
+    # =====================================================
+    return ChatResponse(
+        answer=answer,
+        sources=sources,
+    )
+
 
 # =========================================================
 # ADMIN UPLOAD (FULLY COMPATIBLE)
