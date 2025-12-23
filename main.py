@@ -251,11 +251,29 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     # CONFIG
     # =====================================================
     MAX_CONTEXT_CHARS = 6000
-    TOP_SCORE_THRESHOLD = 0.55  # confidence threshold for RAG
+    TOP_SCORE_THRESHOLD = 0.55
 
-    # Always initialize (BUG FIX)
+    # Always initialize (critical bug fix)
     context: List[str] = []
     sources: List[dict] = []
+
+    user_mode = (req.mode or "qa").lower()
+
+    # =====================================================
+    # PROMPT STYLE BY MODE
+    # =====================================================
+    if user_mode == "discussion":
+        style_instruction = (
+            "Explain the concept in a teaching and discussion style. "
+            "Elaborate step-by-step, give intuition, and make it easy to understand. "
+            "You may use examples if appropriate."
+        )
+    else:  # default QA mode
+        style_instruction = (
+            "Answer in strict exam-oriented style. "
+            "Use clear headings, numbered points, and concise explanations. "
+            "Avoid unnecessary elaboration."
+        )
 
     # =====================================================
     # 1️⃣ GATEKEEPER — NON-CA QUESTIONS
@@ -266,8 +284,8 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "role": "system",
                 "content": (
                     "You are a polite assistant. "
-                    "This system is designed mainly for Indian CA-related questions. "
-                    "Answer briefly using general knowledge."
+                    "This system is mainly for Indian CA-related questions. "
+                    + style_instruction
                 )
             },
             {"role": "user", "content": req.message},
@@ -277,22 +295,21 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
             answer=answer,
             sources=[{
                 "doc_title": "General response",
-                "note": "Question is not related to CA syllabus",
+                "note": "Question not related to CA syllabus",
                 "confidence": "low",
             }]
         )
 
     # =====================================================
-    # 2️⃣ BASIC CA QUESTIONS (LLM ONLY, BUT SOURCES SHOWN)
+    # 2️⃣ BASIC CA QUESTIONS (LLM ONLY)
     # =====================================================
     if is_basic_ca_question(req.message):
         answer = await call_llm([
             {
                 "role": "system",
                 "content": (
-                    "You are a senior Chartered Accountant and ICAI-level tutor. "
-                    "Explain the concept clearly in short, exam-oriented language. "
-                    "Do not go beyond syllabus expectations."
+                    "You are a senior Chartered Accountant and ICAI tutor. "
+                    + style_instruction
                 )
             },
             {"role": "user", "content": req.message},
@@ -322,7 +339,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     matches = rerank(result.get("matches", []))
 
     # =====================================================
-    # 4️⃣ WEAK / NO MATCH → LLM FALLBACK (LABELED)
+    # 4️⃣ WEAK / NO MATCH → LLM FALLBACK
     # =====================================================
     if not matches or matches[0]["final_score"] < TOP_SCORE_THRESHOLD:
         answer = await call_llm([
@@ -330,8 +347,9 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "role": "system",
                 "content": (
                     "You are a highly experienced Chartered Accountant (CA). "
-                    "Answer the question clearly using general CA knowledge. "
-                    "This answer is NOT based on uploaded ICAI documents."
+                    "Answer using general CA knowledge. "
+                    "This answer is NOT based on uploaded ICAI documents. "
+                    + style_instruction
                 )
             },
             {"role": "user", "content": req.message},
@@ -373,7 +391,6 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         context.append(block)
         total_chars += len(block)
 
-        # OLD FRONTEND-COMPATIBLE SOURCE FORMAT
         sources.append({
             "doc_title": meta.get("source"),
             "page_start": meta.get("page"),
@@ -384,21 +401,19 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         })
 
     # =====================================================
-    # 6️⃣ STRONG ICAI-GRADE PROMPT (DOCUMENT ANSWER)
+    # 6️⃣ STRONG ICAI PROMPT (MODE-AWARE)
     # =====================================================
     system_prompt = f"""
         You are a highly experienced Chartered Accountant (CA) and ICAI-level examiner.
         
-        STRICT RULES (MANDATORY):
+        STRICT RULES:
         1. Answer ONLY using the information provided in the CONTEXT below.
-        2. Do NOT use any external knowledge or assumptions.
-        3. If the answer is NOT clearly available in the context, respond EXACTLY with:
+        2. Do NOT use any external knowledge.
+        3. If the answer is NOT clearly available in the context, say:
            "This information is not available in the provided syllabus material."
-        4. Write the answer in clear, exam-oriented language suitable for CA students.
-        5. Use structured points, headings, or steps wherever applicable.
-        6. Do NOT hallucinate sections, rules, amendments, case laws, or examples.
-        7. If tables or figures are referenced in context, mention them explicitly.
-        8. End the answer with a short section titled: "Sources Used".
+        4. {style_instruction}
+        5. Do NOT hallucinate sections, rules, amendments, or case laws.
+        6. End the answer with a section titled: "Sources Used".
         
         CONTEXT:
         {chr(10).join(context)}
@@ -410,12 +425,13 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     ])
 
     # =====================================================
-    # 7️⃣ FINAL RESPONSE (DOCUMENT-BASED)
+    # 7️⃣ FINAL RESPONSE
     # =====================================================
     return ChatResponse(
         answer=answer,
         sources=sources,
     )
+
 
 
 # =========================================================
