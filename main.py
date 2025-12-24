@@ -184,11 +184,11 @@ async def me(user=Depends(get_current_user)):
 # =========================================================
 # GATEKEEPER LOGIC (PRESERVED)
 # =========================================================
-BASIC_KEYWORDS = ["what is", "define", "meaning of", "short note"]
+# BASIC_KEYWORDS = ["what is", "define", "meaning of", "short note"]
 
-def is_basic_ca_question(q: str) -> bool:
-    q = q.lower()
-    return any(k in q for k in BASIC_KEYWORDS)
+# def is_basic_ca_question(q: str) -> bool:
+#     q = q.lower()
+#     return any(k in q for k in BASIC_KEYWORDS)
 
 async def is_ca_related_question(question: str) -> bool:
     system = (
@@ -256,7 +256,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     # CONFIG
     # =====================================================
     MAX_CONTEXT_CHARS = 6000
-    TOP_SCORE_THRESHOLD = 0.55
+    TOP_SCORE_THRESHOLD = 0.30
 
     # Always initialize (critical bug fix)
     context: List[str] = []
@@ -308,26 +308,26 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     # =====================================================
     # 2️⃣ BASIC CA QUESTIONS (LLM ONLY)
     # =====================================================
-    if is_basic_ca_question(req.message):
-        answer = await call_llm([
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior Chartered Accountant and ICAI tutor. "
-                    + style_instruction
-                )
-            },
-            {"role": "user", "content": req.message},
-        ])
+    # if is_basic_ca_question(req.message):
+    #     answer = await call_llm([
+    #         {
+    #             "role": "system",
+    #             "content": (
+    #                 "You are a senior Chartered Accountant and ICAI tutor. "
+    #                 + style_instruction
+    #             )
+    #         },
+    #         {"role": "user", "content": req.message},
+    #     ])
 
-        return ChatResponse(
-            answer=answer,
-            sources=[{
-                "doc_title": "Conceptual explanation",
-                "note": "Basic CA concept answered without document reference",
-                "confidence": "medium",
-            }]
-        )
+    #     return ChatResponse(
+    #         answer=answer,
+    #         sources=[{
+    #             "doc_title": "Conceptual explanation",
+    #             "note": "Basic CA concept answered without document reference",
+    #             "confidence": "medium",
+    #         }]
+    #     )
 
     # =====================================================
     # 3️⃣ RAG — PINECONE RETRIEVAL
@@ -346,7 +346,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     # =====================================================
     # 4️⃣ WEAK / NO MATCH → LLM FALLBACK
     # =====================================================
-    if not matches or matches[0]["final_score"] < TOP_SCORE_THRESHOLD:
+    if not matches:
         answer = await call_llm([
             {
                 "role": "system",
