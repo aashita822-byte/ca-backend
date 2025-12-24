@@ -105,9 +105,14 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
 
+# class ChatRequest(BaseModel):
+#     message: str
+#     history: Optional[List[ChatMessage]] = None
+
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatMessage]] = None
+    mode: Optional[Literal["qa", "discussion"]] = "qa"
 
 class ChatResponse(BaseModel):
     answer: str
@@ -266,7 +271,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         style_instruction = (
             "Explain the concept in a teaching and discussion style. "
             "Elaborate step-by-step, give intuition, and make it easy to understand. "
-            "You may use examples if appropriate."
+            "You may use examples if appropriate.use user a user b formate"
         )
     else:  # default QA mode
         style_instruction = (
