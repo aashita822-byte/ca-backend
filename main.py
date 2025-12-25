@@ -249,213 +249,333 @@ def rerank(matches: list[dict]) -> list[dict]:
 # =========================================================
 # CHAT ENDPOINT (FINAL)
 # =========================================================
+# @app.post("/chat", response_model=ChatResponse)
+# async def chat(req: ChatRequest, user=Depends(get_current_user)):
+
+#     # ---------- CA-safe keywords ----------
+#     CA_SAFE_TERMS = [
+#         "interim", "rule", "rules", "section", "act",
+#         "ind as", "as ", "schedule", "icai", "gst",
+#         "income tax", "audit", "accounting", "law"
+#     ]
+    
+#     msg_lower = req.message.lower()
+#     is_safe_ca = any(term in msg_lower for term in CA_SAFE_TERMS)
+
+
+#     # 0️⃣ Empty / very short message guard
+#     if not req.message or len(req.message.strip().split()) < 2 and not is_safe_ca:
+#         return ChatResponse(
+#             answer="Please ask a complete CA-related question for better results.",
+#             sources=[]
+#         )
+    
+   
+#     # =====================================================
+#     # CONFIG
+#     # =====================================================
+#     MAX_CONTEXT_CHARS = 6000
+#     TOP_SCORE_THRESHOLD = 0.30
+
+#     # Always initialize (critical bug fix)
+#     context: List[str] = []
+#     sources: List[dict] = []
+
+#     user_mode = (req.mode or "qa").lower()
+ 
+#     # =====================================================
+#     # PROMPT STYLE BY MODE
+#     # =====================================================
+#     if user_mode == "discussion":
+#         style_instruction = (
+#             "Explain the concept in a teaching and discussion style. "
+#             "Elaborate step-by-step, give intuition, and make it easy to understand. "
+#             "You may use examples if appropriate.use user a user b formate"
+#         )
+#     else:  # default QA mode
+#         style_instruction = (
+#             "Answer in strict exam-oriented style. "
+#             "Use clear headings, numbered points, and concise explanations. "
+#             "Avoid unnecessary elaboration."
+#         )
+
+#     # =====================================================
+#     # 1️⃣ GATEKEEPER — NON-CA QUESTIONS
+#     # =====================================================
+#     if not is_safe_ca:
+#         is_ca = await is_ca_related_question(req.message)
+#         if not is_ca:
+#             answer = await call_llm([
+#                 {
+#                     "role": "system",
+#                     "content": (
+#                         "You are a polite assistant for Indian CA students. "
+#                         "Explain briefly and suggest how it may relate to CA syllabus."
+#                     )
+#                 },
+#                 {"role": "user", "content": req.message},
+#             ])
+#             return ChatResponse(
+#                 answer=answer,
+#                 sources=[{
+#                     "doc_title": "General response",
+#                     "note": "Question loosely related / outside CA syllabus",
+#                     "confidence": "low"
+#                 }]
+#             )
+
+
+#     # =====================================================
+#     # 2️⃣ BASIC CA QUESTIONS (LLM ONLY)
+#     # =====================================================
+#     # if is_basic_ca_question(req.message):
+#     #     answer = await call_llm([
+#     #         {
+#     #             "role": "system",
+#     #             "content": (
+#     #                 "You are a senior Chartered Accountant and ICAI tutor. "
+#     #                 + style_instruction
+#     #             )
+#     #         },
+#     #         {"role": "user", "content": req.message},
+#     #     ])
+
+#     #     return ChatResponse(
+#     #         answer=answer,
+#     #         sources=[{
+#     #             "doc_title": "Conceptual explanation",
+#     #             "note": "Basic CA concept answered without document reference",
+#     #             "confidence": "medium",
+#     #         }]
+#     #     )
+
+#     # =====================================================
+#     # 3️⃣ RAG — PINECONE RETRIEVAL
+#     # =====================================================
+#     query_embedding = await embed_single(req.message)
+
+#     # result = index.query(
+#     #     vector=query_embedding,
+#     #     top_k=10,
+#     #     include_metadata=True,
+#     #     namespace=RAG_NAMESPACE,
+#     # )
+
+#     # matches = rerank(result.get("matches", []))
+
+#     res = index.query(
+#         vector=query_embedding,
+#         top_k=8,
+#         include_metadata=True,
+#         # namespace=namespace,
+#     )
+#     matches = res.get("matches") or []
+
+
+#     # =====================================================
+#     # 4️⃣ WEAK / NO MATCH → LLM FALLBACK
+#     # =====================================================
+#     if not matches:
+#         answer = await call_llm([
+#             {
+#                 "role": "system",
+#                 "content": (
+#                     "You are a highly experienced Chartered Accountant (CA). "
+#                     "Answer using general CA knowledge. "
+#                     "This answer is NOT based on uploaded ICAI documents. "
+#                     + style_instruction
+#                 )
+#             },
+#             {"role": "user", "content": req.message},
+#         ])
+
+#         answer += (
+#             "\n\n⚠️ Note: This answer is generated by the AI model and "
+#             "is not directly sourced from uploaded ICAI material."
+#         )
+
+#         return ChatResponse(
+#             answer=answer,
+#             sources=[{
+#                 "doc_title": "LLM Generated Answer",
+#                 "note": "No sufficiently relevant document was found",
+#                 "confidence": "low",
+#             }]
+#         )
+
+#     # =====================================================
+#     # 5️⃣ BUILD CONTEXT + SOURCES (DOCUMENT-BASED)
+#     # =====================================================
+#     total_chars = 0
+
+#     for m in matches[:6]:
+#         meta = m["metadata"]
+
+#         # ✅ ADD THIS BLOCK HERE
+#         if "page" in meta:
+#             meta["page_start"] = meta.get("page")
+#             meta["page_end"] = meta.get("page")
+    
+#         meta.setdefault("page_start", None)
+#         meta.setdefault("page_end", None)
+#         meta.setdefault("doc_title", meta.get("source"))
+#         meta.setdefault("type", "text")
+        
+#         text = meta.get("text", "").strip()
+#         if not text:
+#             continue
+
+#         block = (
+#             f"[Document: {meta.get('source')} | Page {meta.get('page')}]\n"
+#             f"{text}"
+#         )
+
+#         if total_chars + len(block) > MAX_CONTEXT_CHARS:
+#             break
+
+#         context.append(block)
+#         total_chars += len(block)
+
+#         sources.append({
+#             "doc_title": meta.get("source"),
+#             "page_start": meta.get("page"),
+#             "level": meta.get("level"),
+#             "subject": meta.get("subject"),
+#             "doc_type": meta.get("doc_type"),
+#             "confidence": round(m["final_score"], 2),
+#         })
+
+#     # =====================================================
+#     # 6️⃣ STRONG ICAI PROMPT (MODE-AWARE)
+#     # =====================================================
+#     system_prompt = f"""
+#         You are a highly experienced Chartered Accountant (CA) and ICAI-level examiner.
+        
+#         STRICT RULES:
+#         1. Answer ONLY using the information provided in the CONTEXT below.
+#         2. Do NOT use any external knowledge.
+#         3. If the answer is NOT clearly available in the context, say:
+#            "This information is not available in the provided syllabus material."
+#         4. {style_instruction}
+#         5. Do NOT hallucinate sections, rules, amendments, or case laws.
+#         6. End the answer with a section titled: "Sources Used".
+        
+#         CONTEXT:
+#         {chr(10).join(context)}
+#         """
+
+#     answer = await call_llm([
+#         {"role": "system", "content": system_prompt},
+#         {"role": "user", "content": req.message},
+#     ])
+
+#     # =====================================================
+#     # 7️⃣ FINAL RESPONSE
+#     # =====================================================
+#     return ChatResponse(
+#         answer=answer,
+#         sources=sources,
+#     )
+
+
+# =========================================================
+# CHAT ENDPOINT (FIXED)
+# =========================================================
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
-    # 0️⃣ Empty / very short message guard
-    if not req.message or len(req.message.strip().split()) < 3:
+    # 1️⃣ SHORT / INCOMPLETE QUESTION GUARD
+    if len(req.message.strip().split()) < 3:
         return ChatResponse(
             answer="Please ask a complete CA-related question for better results.",
             sources=[]
         )
-    # =====================================================
-    # CONFIG
-    # =====================================================
-    MAX_CONTEXT_CHARS = 6000
-    TOP_SCORE_THRESHOLD = 0.30
 
-    # Always initialize (critical bug fix)
-    context: List[str] = []
-    sources: List[dict] = []
-
-    user_mode = (req.mode or "qa").lower()
- 
-    # =====================================================
-    # PROMPT STYLE BY MODE
-    # =====================================================
-    if user_mode == "discussion":
-        style_instruction = (
-            "Explain the concept in a teaching and discussion style. "
-            "Elaborate step-by-step, give intuition, and make it easy to understand. "
-            "You may use examples if appropriate.use user a user b formate"
-        )
-    else:  # default QA mode
-        style_instruction = (
-            "Answer in strict exam-oriented style. "
-            "Use clear headings, numbered points, and concise explanations. "
-            "Avoid unnecessary elaboration."
-        )
-
-    # =====================================================
-    # 1️⃣ GATEKEEPER — NON-CA QUESTIONS
-    # =====================================================
-    if not await is_ca_related_question(req.message):
-        answer = await call_llm([
-            {
-                "role": "system",
-                "content": (
-                    "You are a polite assistant. "
-                    "This system is mainly for Indian CA-related questions. "
-                    + style_instruction
-                )
-            },
-            {"role": "user", "content": req.message},
-        ])
-
-        return ChatResponse(
-            answer=answer,
-            sources=[{
-                "doc_title": "General response",
-                "note": "Question not related to CA syllabus",
-                "confidence": "low",
-            }]
-        )
-
-    # =====================================================
-    # 2️⃣ BASIC CA QUESTIONS (LLM ONLY)
-    # =====================================================
-    # if is_basic_ca_question(req.message):
-    #     answer = await call_llm([
-    #         {
-    #             "role": "system",
-    #             "content": (
-    #                 "You are a senior Chartered Accountant and ICAI tutor. "
-    #                 + style_instruction
-    #             )
-    #         },
-    #         {"role": "user", "content": req.message},
-    #     ])
-
-    #     return ChatResponse(
-    #         answer=answer,
-    #         sources=[{
-    #             "doc_title": "Conceptual explanation",
-    #             "note": "Basic CA concept answered without document reference",
-    #             "confidence": "medium",
-    #         }]
-    #     )
-
-    # =====================================================
-    # 3️⃣ RAG — PINECONE RETRIEVAL
-    # =====================================================
+    # 2️⃣ EMBED QUERY
     query_embedding = await embed_single(req.message)
 
-    result = index.query(
+    # 3️⃣ PINECONE SEARCH
+    res = index.query(
         vector=query_embedding,
-        top_k=10,
+        top_k=8,
         include_metadata=True,
-        namespace=RAG_NAMESPACE,
     )
 
-    matches = rerank(result.get("matches", []))
+    matches = res.get("matches") or []
 
-    # =====================================================
-    # 4️⃣ WEAK / NO MATCH → LLM FALLBACK
-    # =====================================================
+    # 4️⃣ IF NO RAG MATCH → LLM FALLBACK
     if not matches:
         answer = await call_llm([
             {
                 "role": "system",
-                "content": (
-                    "You are a highly experienced Chartered Accountant (CA). "
-                    "Answer using general CA knowledge. "
-                    "This answer is NOT based on uploaded ICAI documents. "
-                    + style_instruction
-                )
+                "content": "You are a CA tutor. Answer conceptually."
             },
             {"role": "user", "content": req.message},
         ])
-
-        answer += (
-            "\n\n⚠️ Note: This answer is generated by the AI model and "
-            "is not directly sourced from uploaded ICAI material."
-        )
-
         return ChatResponse(
             answer=answer,
             sources=[{
-                "doc_title": "LLM Generated Answer",
-                "note": "No sufficiently relevant document was found",
-                "confidence": "low",
+                "doc_title": "LLM Generated",
+                "note": "No matching document found",
             }]
         )
 
-    # =====================================================
-    # 5️⃣ BUILD CONTEXT + SOURCES (DOCUMENT-BASED)
-    # =====================================================
-    total_chars = 0
+    # 5️⃣ BUILD CONTEXT + FIX METADATA (🔥 CRITICAL FIX 🔥)
+    context_blocks = []
+    sources = []
 
-    for m in matches[:6]:
+    for m in matches[:5]:
         meta = m["metadata"]
 
-        # ✅ ADD THIS BLOCK HERE
-        if "page" in meta:
-            meta["page_start"] = meta.get("page")
-            meta["page_end"] = meta.get("page")
-    
-        meta.setdefault("page_start", None)
-        meta.setdefault("page_end", None)
-        meta.setdefault("doc_title", meta.get("source"))
-        meta.setdefault("type", "text")
-        
-        text = meta.get("text", "").strip()
+        # 🔥 FIX: normalize OLD uploaded metadata
+        page_no = meta.get("page")
+        if page_no:
+            meta["page_start"] = page_no
+            meta["page_end"] = page_no
+
+        text = meta.get("text", "")
         if not text:
             continue
 
-        block = (
-            f"[Document: {meta.get('source')} | Page {meta.get('page')}]\n"
-            f"{text}"
+        context_blocks.append(
+            f"[Document: {meta.get('source')} | Page {meta.get('page_start')}]\n{text}"
         )
-
-        if total_chars + len(block) > MAX_CONTEXT_CHARS:
-            break
-
-        context.append(block)
-        total_chars += len(block)
 
         sources.append({
             "doc_title": meta.get("source"),
-            "page_start": meta.get("page"),
-            "level": meta.get("level"),
+            "page_start": meta.get("page_start"),
+            "page_end": meta.get("page_end"),
             "subject": meta.get("subject"),
             "doc_type": meta.get("doc_type"),
-            "confidence": round(m["final_score"], 2),
+            "score": round(m["score"], 3),
         })
 
-    # =====================================================
-    # 6️⃣ STRONG ICAI PROMPT (MODE-AWARE)
-    # =====================================================
+    context = "\n\n---\n\n".join(context_blocks)
+
+    # 6️⃣ MODE AWARE PROMPT
+    if req.mode == "discussion":
+        style = "Explain as a discussion between User A and User B."
+    else:
+        style = "Answer in exam-oriented point-wise format."
+
     system_prompt = f"""
-        You are a highly experienced Chartered Accountant (CA) and ICAI-level examiner.
-        
-        STRICT RULES:
-        1. Answer ONLY using the information provided in the CONTEXT below.
-        2. Do NOT use any external knowledge.
-        3. If the answer is NOT clearly available in the context, say:
-           "This information is not available in the provided syllabus material."
-        4. {style_instruction}
-        5. Do NOT hallucinate sections, rules, amendments, or case laws.
-        6. End the answer with a section titled: "Sources Used".
-        
-        CONTEXT:
-        {chr(10).join(context)}
-        """
+You are an ICAI Chartered Accountant tutor.
+
+RULES:
+- Use ONLY the context below
+- If answer not found, clearly say so
+- {style}
+
+CONTEXT:
+{context}
+"""
 
     answer = await call_llm([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": req.message},
     ])
 
-    # =====================================================
-    # 7️⃣ FINAL RESPONSE
-    # =====================================================
-    return ChatResponse(
-        answer=answer,
-        sources=sources,
-    )
-
-
-
+    return ChatResponse(answer=answer, sources=sources)
 # =========================================================
 # ADMIN UPLOAD (FULLY COMPATIBLE)
 # =========================================================
