@@ -252,6 +252,12 @@ def rerank(matches: list[dict]) -> list[dict]:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
+    # 0️⃣ Empty / very short message guard
+    if not req.message or len(req.message.strip().split()) < 3:
+        return ChatResponse(
+            answer="Please ask a complete CA-related question for better results.",
+            sources=[]
+        )
     # =====================================================
     # CONFIG
     # =====================================================
@@ -263,7 +269,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
     sources: List[dict] = []
 
     user_mode = (req.mode or "qa").lower()
-
+ 
     # =====================================================
     # PROMPT STYLE BY MODE
     # =====================================================
@@ -381,6 +387,17 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
     for m in matches[:6]:
         meta = m["metadata"]
+
+        # ✅ ADD THIS BLOCK HERE
+        if "page" in meta:
+            meta["page_start"] = meta.get("page")
+            meta["page_end"] = meta.get("page")
+    
+        meta.setdefault("page_start", None)
+        meta.setdefault("page_end", None)
+        meta.setdefault("doc_title", meta.get("source"))
+        meta.setdefault("type", "text")
+        
         text = meta.get("text", "").strip()
         if not text:
             continue
