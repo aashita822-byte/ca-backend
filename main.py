@@ -726,16 +726,13 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
         if req.mode == "discussion":
             system_prompt = (
-                "You are simulating a discussion between two CA students (User A and User B) "
-                "who are revising for CA exams.give dialogues for question,use your creativity.\n\n"
+                "You are simulating a discussion Explain the concept in a teaching and discussion style."
+                "Elaborate step-by-step, give intuition, and make it easy to understand. "
+                "You may use examples if appropriate.use user a user b formate\n\n"
 
                 "Rules:\n"
-                "- Write strictly as a dialogue.\n"
                 "- Alternate clearly between 'User A:' and 'User B:'.\n"
-                "- User A asks doubts or questions.\n"
-                "- User B explains using ONLY the given context.\n"
                 "- Keep it exam-oriented and accurate.\n"
-                "- Do NOT add information outside the context.\n"
                 "- Provide at least 4 exchanges.\n\n"
 
                 f"Context:\n{context_str}"
