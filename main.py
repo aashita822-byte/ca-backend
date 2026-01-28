@@ -93,7 +93,11 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 class UserCreate(BaseModel):
     email: str
     password: str
-    role: str = "student"  # student or admin
+    name: str
+    phone: str
+    ca_level: str
+    ca_attempt: int
+    role: str = "student"
 
 
 class UserLogin(BaseModel):
@@ -294,6 +298,33 @@ async def call_llm(messages: List[dict]) -> str:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+async def call_llm_with_chain(
+    *,
+    user_question: str,
+    context: str,
+    final_system_prompt: str,
+) -> str:
+    """
+    Internal 3-step reasoning chain for CA answers.
+    Reasoning is hidden; only final answer is returned.
+    """
+
+    chain_prompt = (
+        "You are reasoning internally as an expert Indian CA tutor.\n\n"
+        "INTERNAL STEPS (do NOT reveal):\n"
+        "1. Understand the exact exam intent of the question.\n"
+        "2. Identify which parts of the context are relevant.\n"
+        "3. Decide the depth needed as per ICAI expectations.\n\n"
+        "Then produce ONLY the final answer as instructed below.\n\n"
+        f"{final_system_prompt}"
+    )
+
+    messages = [
+        {"role": "system", "content": chain_prompt},
+        {"role": "user", "content": user_question},
+    ]
+
+    return await call_llm(messages)
 
 # ---------- Helpers ----------
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 200) -> List[str]:
@@ -550,6 +581,10 @@ async def signup(user: UserCreate):
         {
             "email": user.email,
             "password_hash": hash_password(user.password),
+            "name": user.name,
+            "phone": user.phone,
+            "ca_level": user.ca_level,
+            "ca_attempt": user.ca_attempt,
             "role": user.role,
             "created_at": datetime.utcnow(),
         }
@@ -641,10 +676,33 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
         if not matches:
             system_prompt = (
-                "You are an Indian CA tutor. "
-                "No document source is available. "
-                "Answer using your CA knowledge and clearly say no source was matched."
+                "You are a senior Indian Chartered Accountant (CA) faculty with experience "
+                "in teaching and evaluating ICAI exams (Foundation, Inter, Final).\n\n"
+
+                "Language rule (MANDATORY):\n"
+                "- Reply strictly in the SAME language as the user's question "
+                "(English, Hindi, or Hinglish).\n\n"
+
+                "Knowledge & safety rules:\n"
+                "- Answer using your standard CA knowledge and well-established ICAI principles.\n"
+                "- Do NOT guess exact section numbers, limits, percentages, or year-specific amendments.\n"
+                "- If precise data is uncertain, explain the concept without giving risky figures.\n\n"
+
+                "Answer structure (EXAM-ORIENTED):\n"
+                "1. Begin with a clear definition or core concept.\n"
+                "2. Explain in logical steps using proper CA terminology.\n"
+                "3. Where relevant, mention accounting treatment / legal position / tax implication.\n"
+                "4. Include ONE short exam-oriented or practical illustration if helpful.\n\n"
+
+                "Exam guidance:\n"
+                "- Add ONE short CA exam tip or common mistake to avoid.\n"
+                "- Keep the answer concise, structured, and revision-friendly.\n\n"
+
+                "Tone & presentation:\n"
+                "- Maintain a professional, faculty-level tone.\n"
+                "- Avoid casual language, storytelling, or over-explanation."
             )
+
 
             answer = await call_llm(
                 [
@@ -657,7 +715,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 answer=answer,
                 sources=[
                     {
-                        "doc_title": "LLM only",
+                        "doc_title": "General CA Knowledge (LLM based)",
                         "note": "No match found in uploaded documents",
                     }
                 ],
@@ -726,34 +784,71 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
         if req.mode == "discussion":
             system_prompt = (
-                "You are simulating a discussion Explain the concept in a teaching and discussion style."
-                "Elaborate step-by-step, give intuition, and make it easy to understand. "
-                "You may use examples if appropriate.use user a user b formate\n\n"
+                "You are an expert Indian CA tutor simulating a healthy academic discussion "
+                "between two CA students preparing for exams.\n\n"
 
-                "Rules:\n"
-                "- Alternate clearly between 'User A:' and 'User B:'.\n"
-                "- Keep it exam-oriented and accurate.\n"
-                "- Provide at least 4 exchanges.\n\n"
+                "Language rules:\n"
+                "- Reply strictly in the SAME language as the user's question (English, Hindi, or Hinglish).\n\n"
 
+                "Discussion format rules:\n"
+                "- Write the answer as a discussion between 'User A:' and 'User B:'.\n"
+                "- Alternate clearly between User A and User B.\n"
+                # "- Do NOT use bullet points, markdown symbols, or asterisks.\n"
+                "- Provide at least 4 to 6 exchanges.\n\n"
+
+                "Content rules (VERY IMPORTANT):\n"
+                "- Explain concepts step-by-step in a teaching style.\n"
+                "- Keep explanations exam-oriented as per ICAI expectations.\n"
+                "- Use simple intuition first, then technical clarity.\n"
+                "- Include 1 short practical or exam-oriented example if relevant.\n"
+                "- add a quick CA exam tip, memory aid, or common mistake to avoid.\n"
+                "- Avoid unnecessary storytelling or casual chat.\n\n"
+
+                "Source rules:\n"
+                "- Answer using the context provided below.\n"
+                "- invent facts but only well trusted and well tested ones based on the given context.\n\n"
                 f"Context:\n{context_str}"
             )
+
         else:
             system_prompt = (
-                "You are an expert Indian CA tutor. "
-                "Answer strictly using the context below. "
-                "If tables or figures are present, refer to them explicitly. "
-                "Keep the answer exam-oriented.\n\n"
+                "You are an expert Indian Chartered Accountant (CA) tutor preparing students "
+                "for ICAI exams (Foundation, Inter, Final).\n\n"
+
+                "Language rule:\n"
+                "- Reply strictly in the SAME language as the user's question "
+                "(English, Hindi, or Hinglish).\n\n"
+
+                "Answering style rules:\n"
+                "- Answer using the context provided below.\n"
+                "- Keep the explanation clear, concise, and exam-oriented, in detail.\n"
+                "- Start with a direct definition or core concept in elaborative style.\n"
+                "- Then briefly explain or elaborate as required for marks.\n"
+                "- If applicable, include a short practical or exam-oriented example.\n"
+                "- If tables or figures are present in the context, refer to them explicitly.\n\n"
+
+                "Exam guidance:\n"
+                "- add one short CA exam tip or a common mistake to avoid.\n"
+                "- Avoid unnecessary storytelling or over-explanation.\n"
+                # "- Do not use markdown symbols, bullet points, or asterisks.\n\n"
+
                 f"Context:\n{context_str}"
             )
 
 
-        answer = await call_llm(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": req.message},
-            ]
+
+        # answer = await call_llm(
+        #     [
+        #         {"role": "system", "content": system_prompt},
+        #         {"role": "user", "content": req.message},
+        #     ]
+        # )
+        answer = await call_llm_with_chain(
+            user_question=req.message,
+            context=context_str,
+            final_system_prompt=system_prompt,
         )
-        
+
         # --- CLEAN SOURCES (REMOVE UNKNOWN + DUPLICATES) ---
         clean_sources = []
         seen = set()
