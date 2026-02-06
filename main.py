@@ -700,7 +700,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         # 🔥 REMOVE WEAK MATCHES
         matches = [
             m for m in matches
-            if m.get("score", 0) > 0.55
+            if m.get("score", 0) > 0.70
             or m.get("metadata", {}).get("type") == "text"
         ]
 
