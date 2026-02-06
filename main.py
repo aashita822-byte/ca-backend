@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from jose import jwt, JWTError
 from passlib.context import CryptContext
+from ca_text_normalizer import expand_ca_abbreviations
 
 from motor.motor_asyncio import AsyncIOMotorClient
 import httpx
@@ -459,9 +460,33 @@ async def is_ca_related_question(question: str) -> bool:
         return True
 
     system = (
-        "You are a classifier. Decide if the user question is even loosely "
-        "related to Chartered Accountancy in India (ICAI syllabus), accounting, taxation, finance, law, or auditing. "
-        "Answer with YES or NO only."
+        # "You are a classifier. Decide if the user question is even loosely "
+        # "related to Chartered Accountancy in India (ICAI syllabus), accounting, taxation, finance, law, or auditing. "
+        # "Answer with YES or NO only."
+        "You are a strict domain classifier for an Indian Chartered Accountancy (CA) assistant.\n\n"
+
+        "Task:\n"
+        "- Decide whether the user's question is genuinely related to the CA domain in India.\n\n"
+
+        "Answer YES only if the question clearly relates to one or more of the following:\n"
+        "- ICAI syllabus (CA Foundation, Inter, or Final)\n"
+        "- Accounting standards (Ind AS, AS, IFRS)\n"
+        "- Auditing and assurance (Standards on Auditing, audit reports)\n"
+        "- Direct tax or GST (Income Tax Act, GST law, compliance, returns)\n"
+        "- Corporate or business law relevant to CA practice (Companies Act, LLP, MCA, ROC)\n"
+        "- Financial statements, accounting treatment, or professional CA work\n\n"
+
+        "Answer NO if the question is:\n"
+        "- General knowledge, technology, science, or unrelated education\n"
+        "- Generic finance or business topics without CA/accounting context\n"
+        "- Personal advice, motivation, or non-professional discussion\n\n"
+
+        "Rules:\n"
+        "- Be conservative: if unsure, answer NO.\n"
+        "- Do NOT assume intent beyond the question text.\n"
+        "- Do NOT treat loosely connected topics as CA-related.\n\n"
+
+        "Respond with YES or NO only. Do not explain your decision."
     )
 
     messages = [
@@ -611,6 +636,12 @@ async def me(user=Depends(get_current_user)):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
     try:
+        # 🔥 NEW: Expand CA abbreviations BEFORE everything
+        original_question = req.message
+        expanded_question = expand_ca_abbreviations(original_question)
+
+        # Use expanded question everywhere internally
+        req.message = expanded_question
         # --------------------------------------------------
         # 1. CA gatekeeper
         # --------------------------------------------------
@@ -800,8 +831,8 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "- Explain concepts step-by-step in a teaching style.\n"
                 "- Keep explanations exam-oriented as per ICAI expectations.\n"
                 "- Use simple intuition first, then technical clarity.\n"
-                "- Include 1 short practical or exam-oriented example if relevant.\n"
-                "- add a quick CA exam tip, memory aid, or common mistake to avoid.\n"
+                "- Include 1 very short practical or exam-oriented example if relevant.\n"
+                "- add a quick very short CA exam tip, memory aid, or common mistake to avoid.\n"
                 "- Avoid unnecessary storytelling or casual chat.\n\n"
 
                 "Source rules:\n"
@@ -828,7 +859,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "- If tables or figures are present in the context, refer to them explicitly.\n\n"
 
                 "Exam guidance:\n"
-                "- add one short CA exam tip or a common mistake to avoid.\n"
+                "- add one very short important CA exam tip or a common mistake to avoid in very short.\n"
                 "- Avoid unnecessary storytelling or over-explanation.\n"
                 # "- Do not use markdown symbols, bullet points, or asterisks.\n\n"
 
