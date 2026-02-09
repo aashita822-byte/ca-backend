@@ -292,6 +292,7 @@ async def call_llm(messages: List[dict]) -> str:
     payload = {
         "model": settings.LLM_MODEL,
         "messages": messages,
+        "temperature": 0.2
     }
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(url, headers=headers, json=payload)
