@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # OpenAI (DIRECT API)
     OPENAI_API_KEY: str
-    LLM_MODEL: str = "gpt-3.5-turbo"
+    LLM_MODEL: str = "gpt-5-mini"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # Frontend
