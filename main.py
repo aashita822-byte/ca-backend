@@ -24,11 +24,13 @@ from pydantic import BaseModel
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from ca_text_normalizer import expand_ca_abbreviations
+# from admin_materials import router as admin_materials_router
 
 from motor.motor_asyncio import AsyncIOMotorClient
 import httpx
 import pinecone
 from pypdf import PdfReader
+from fastapi import APIRouter
 
 from config import settings
 from typing import Literal
@@ -89,6 +91,7 @@ UPLOAD_ROOT = getattr(settings, "UPLOAD_ROOT", "./uploads")
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
+router = APIRouter(prefix="/admin/materials")
 
 # ---------- Models ----------
 class UserCreate(BaseModel):
@@ -597,7 +600,29 @@ def save_page_images_and_thumbs(file_bytes: bytes, out_dir: str, dpi: int = 200)
 
 
 # ---------- Auth routes ----------
-@app.post("/auth/signup", response_model=Token)
+# @app.post("/auth/signup", response_model=Token)
+# async def signup(user: UserCreate):
+#     existing = await get_user_by_email(user.email)
+#     if existing:
+#         raise HTTPException(status_code=400, detail="Email already registered")
+
+#     await users_collection.insert_one(
+#         {
+#             "email": user.email,
+#             "password_hash": hash_password(user.password),
+#             "name": user.name,
+#             "phone": user.phone,
+#             "ca_level": user.ca_level,
+#             "ca_attempt": user.ca_attempt,
+#             "role": user.role,
+#             "status": "pending",  # 🔥 important
+#             "created_at": datetime.utcnow(),
+#         }
+#     )
+#     token = create_access_token({"sub": user.email})
+#     return Token(access_token=token)
+
+@app.post("/auth/signup")
 async def signup(user: UserCreate):
     existing = await get_user_by_email(user.email)
     if existing:
@@ -611,18 +636,26 @@ async def signup(user: UserCreate):
             "phone": user.phone,
             "ca_level": user.ca_level,
             "ca_attempt": user.ca_attempt,
-            "role": user.role,
+            "role": "student",   # force student
+            "status": "pending",
             "created_at": datetime.utcnow(),
         }
     )
-    token = create_access_token({"sub": user.email})
-    return Token(access_token=token)
 
+    return {
+        "message": "Signup successful. Please wait for admin approval before logging in."
+    }
 
 @app.post("/auth/login", response_model=Token)
 async def login(data: UserLogin):
     user = await get_user_by_email(data.email)
-    if not user or not verify_password(data.password, user["password_hash"]):
+    if not user or user.get("status") != "approved":
+        raise HTTPException(
+            status_code=403,
+            detail="Your account is pending admin approval."
+        )
+
+    if not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Invalid credentials")
     token = create_access_token({"sub": user["email"]})
     return Token(access_token=token)
@@ -631,6 +664,34 @@ async def login(data: UserLogin):
 @app.get("/auth/me", response_model=UserOut)
 async def me(user=Depends(get_current_user)):
     return UserOut(email=user["email"], role=user["role"])
+
+@app.get("/admin/students")
+async def get_all_students(admin=Depends(get_current_admin)):
+    cursor = users_collection.find({"role": "student"})
+    students = []
+    async for user in cursor:
+        user["_id"] = str(user["_id"])
+        students.append(user)
+    return students
+
+from bson import ObjectId
+
+@app.post("/admin/approve/{user_id}")
+async def approve_student(user_id: str, admin=Depends(get_current_admin)):
+    result = await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"status": "approved"}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    return {"message": "Student approved"}
+
+@app.post("/admin/reject/{user_id}")
+async def reject_student(user_id: str, admin=Depends(get_current_admin)):
+    await users_collection.delete_one({"_id": ObjectId(user_id)})
+    return {"message": "Student rejected"}
 
 
 # ---------- Chat (RAG) ----------
@@ -1223,3 +1284,161 @@ async def list_documents(admin=Depends(get_current_admin)):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ============================================================
+# ADMIN MATERIALS ROUTES (Merged from admin_materials.py)
+# ============================================================
+
+from fastapi import UploadFile, File, Form
+from typing import Optional, Dict, Any
+from bson import ObjectId
+import io
+from pypdf import PdfReader
+
+
+# -----------------------------
+# Utility: Extract text pages
+# -----------------------------
+def extract_pdf_pages(file_bytes: bytes):
+    reader = PdfReader(io.BytesIO(file_bytes))
+    pages = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        pages.append(text)
+    return pages
+
+
+# ------------------------------------------------------------
+# Upload PDF with structured metadata
+# ------------------------------------------------------------
+@app.post("/admin/materials/upload", tags=["Admin Materials"])
+async def upload_material(
+    file: UploadFile = File(...),
+    course: str = Form(...),
+    chapter: Optional[str] = Form(None),
+    section: Optional[str] = Form(None),
+    unit: Optional[str] = Form(None),
+    custom_heading: Optional[str] = Form(None),
+    admin=Depends(get_current_admin),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files allowed")
+
+    file_bytes = await file.read()
+    pages = extract_pdf_pages(file_bytes)
+
+    chunks_for_index = []
+
+    for page_num, page_text in enumerate(pages, start=1):
+        if not page_text.strip():
+            continue
+
+        page_chunks = chunk_text_words(page_text, chunk_size=200, overlap=50)
+
+        for idx, chunk in enumerate(page_chunks):
+            chunk_id = sanitize_id(f"{file.filename}_p{page_num}_c{idx}")
+
+            chunks_for_index.append(
+                {
+                    "id": chunk_id,
+                    "text": chunk,
+                    "page": page_num,
+                }
+            )
+
+    if not chunks_for_index:
+        raise HTTPException(status_code=400, detail="No text extracted from PDF")
+
+    # -----------------------------
+    # Embed & Push to Pinecone
+    # -----------------------------
+    texts = [c["text"] for c in chunks_for_index]
+    embeddings = await embed_texts(texts)
+
+    vectors = []
+
+    for chunk, emb in zip(chunks_for_index, embeddings):
+        metadata: Dict[str, Any] = {
+            "text": chunk["text"][:2000],
+            "source": file.filename,
+            "course": course,
+            "chapter": chapter,
+            "section": section,
+            "unit": unit,
+            "custom_heading": custom_heading,
+            "page": chunk["page"],
+            "uploaded_by": admin["email"],
+            "uploaded_at": datetime.utcnow().isoformat(),
+            "type": "text",
+        }
+
+        metadata = {k: v for k, v in metadata.items() if v is not None}
+
+        vectors.append(
+            {
+                "id": chunk["id"],
+                "values": emb,
+                "metadata": metadata,
+            }
+        )
+
+    # Upsert in batches
+    BATCH_SIZE = 100
+    for i in range(0, len(vectors), BATCH_SIZE):
+        index.upsert(vectors=vectors[i : i + BATCH_SIZE])
+
+    # -----------------------------
+    # Store document-level record
+    # -----------------------------
+    await docs_collection.insert_one(
+        {
+            "filename": file.filename,
+            "course": course,
+            "chapter": chapter,
+            "section": section,
+            "unit": unit,
+            "custom_heading": custom_heading,
+            "uploaded_by": admin["email"],
+            "uploaded_at": datetime.utcnow(),
+            "chunks": len(chunks_for_index),
+        }
+    )
+
+    return {
+        "message": "Material uploaded successfully",
+        "chunks_indexed": len(chunks_for_index),
+    }
+
+
+# ------------------------------------------------------------
+# Get documents grouped by course
+# ------------------------------------------------------------
+@app.get("/admin/documents/grouped", tags=["Admin Materials"])
+async def get_grouped_documents(admin=Depends(get_current_admin)):
+    cursor = docs_collection.find()
+    grouped = {}
+
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        course = doc.get("course", "Other")
+
+        if course not in grouped:
+            grouped[course] = []
+
+        grouped[course].append(doc)
+
+    return grouped
+
+
+# ------------------------------------------------------------
+# Delete Document
+# ------------------------------------------------------------
+@app.delete("/admin/materials/{doc_id}", tags=["Admin Materials"])
+async def delete_document(doc_id: str, admin=Depends(get_current_admin)):
+    result = await docs_collection.delete_one({"_id": ObjectId(doc_id)})
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return {"message": "Document deleted successfully"}
