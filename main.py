@@ -1442,3 +1442,135 @@ async def delete_document(doc_id: str, admin=Depends(get_current_admin)):
         raise HTTPException(status_code=404, detail="Document not found")
 
     return {"message": "Document deleted successfully"}
+
+# ============================================================
+# ADVANCED ADMIN PDF UPLOAD (COLAB FORMAT COMPATIBLE)
+# ============================================================
+
+import uuid
+from pypdf import PdfReader
+
+# -----------------------------
+# Clean Text
+# -----------------------------
+def clean_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+# -----------------------------
+# Extract PDF Pages
+# -----------------------------
+def extract_pdf_pages_advanced(file_bytes: bytes):
+    reader = PdfReader(io.BytesIO(file_bytes))
+    pages = []
+
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text()
+        if text and len(text.strip()) > 50:
+            pages.append({
+                "page": i + 1,
+                "text": clean_text(text)
+            })
+
+    return pages
+
+
+# -----------------------------
+# Token-based Chunking (Production Ready)
+# -----------------------------
+def chunk_text_advanced(text: str, chunk_size: int = 1000, overlap: int = 100):
+    words = text.split()
+    chunks = []
+
+    start = 0
+    while start < len(words):
+        end = start + chunk_size
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        start += chunk_size - overlap
+
+    return chunks
+
+
+# ============================================================
+# SINGLE ADVANCED UPLOAD ROUTE
+# ============================================================
+
+# @app.post("/admin/materials/upload", tags=["Admin Materials"])
+# async def upload_advanced_pdf(
+#     file: UploadFile = File(...),
+#     level: str = Form(...),           # Foundation / Intermediate / Final
+#     subject: str = Form(...),
+#     chapter: str = Form(...),
+#     doc_type: str = Form("static"),
+#     year: str = Form("2026"),
+#     authority: str = Form("ICAI"),
+#     admin=Depends(get_current_admin),
+# ):
+
+#     if not file.filename.lower().endswith(".pdf"):
+#         raise HTTPException(status_code=400, detail="Only PDF files allowed")
+
+#     file_bytes = await file.read()
+
+#     pages = extract_pdf_pages_advanced(file_bytes)
+
+#     if not pages:
+#         raise HTTPException(status_code=400, detail="No readable content found")
+
+#     vectors = []
+
+#     for page in pages:
+#         chunks = chunk_text_advanced(page["text"])
+
+#         embeddings = await embed_texts(chunks)
+
+#         for chunk, emb in zip(chunks, embeddings):
+
+#             metadata = {
+#                 "level": level,
+#                 "subject": subject,
+#                 "chapter": chapter,
+#                 "doc_type": doc_type,
+#                 "year": year,
+#                 "authority": authority,
+#                 "source": file.filename,
+#                 "page": page["page"],
+#                 "text": chunk,
+#                 "uploaded_by": admin["email"],
+#                 "uploaded_at": datetime.utcnow().isoformat(),
+#             }
+
+#             vectors.append({
+#                 "id": str(uuid.uuid4()),   # UUID like Colab
+#                 "values": emb,
+#                 "metadata": metadata
+#             })
+
+#     # Batch Upsert (No Namespace → Default)
+#     BATCH_SIZE = 100
+
+#     for i in range(0, len(vectors), BATCH_SIZE):
+#         index.upsert(
+#             vectors=vectors[i:i + BATCH_SIZE]
+#         )
+
+#     # Store Document Record in Mongo
+#     await docs_collection.insert_one({
+#         "filename": file.filename,
+#         "level": level,
+#         "subject": subject,
+#         "chapter": chapter,
+#         "doc_type": doc_type,
+#         "year": year,
+#         "authority": authority,
+#         "uploaded_by": admin["email"],
+#         "uploaded_at": datetime.utcnow(),
+#         "total_chunks": len(vectors),
+#     })
+
+#     return {
+#         "message": "Upload successful",
+#         "total_chunks_indexed": len(vectors)
+#     }
