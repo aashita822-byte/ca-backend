@@ -8,6 +8,7 @@ import csv
 from datetime import datetime, timedelta
 from typing import Any, List, Optional, Dict
 import re
+from typing import Optional
 
 from fastapi import (
     FastAPI,
@@ -73,6 +74,7 @@ mongo_client = AsyncIOMotorClient(settings.MONGO_URI)
 db = mongo_client[settings.MONGO_DB]
 users_collection = db["users"]
 docs_collection = db["documents"]
+dashboard_collection = db["ca_dashboard"]
 
 pinecone_client = pinecone.Pinecone(api_key=settings.PINECONE_API_KEY)
 index = pinecone_client.Index(settings.PINECONE_INDEX)
@@ -139,6 +141,15 @@ class UploadResult(BaseModel):
     chunks: int
     filename: str
 
+class DashboardItem(BaseModel):
+    level: str
+    subject: str
+    module: str
+    chapter: str
+    unit: str
+    title: str
+    pdf_url: str
+    video_url: Optional[str] = ""
 
 # ---------- Utility functions ----------
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -317,15 +328,17 @@ async def call_llm_with_chain(
     chain_prompt = (
         "You are reasoning internally as an expert Indian CA tutor.\n\n"
         "INTERNAL STEPS (do NOT reveal):\n"
-        "1. Understand the exact exam intent of the question.\n"
-        "2. Identify which parts of the context are relevant.\n"
-        "3. Decide the depth needed as per ICAI expectations.\n\n"
+        "1. Understand the exact exam intent of the question.First identify the overall concept being asked.\n"
+        "2. Identify which parts of the context are relevant.Merge information from multiple context blocks\n"
+        "3. Decide the depth needed as per ICAI expectations.Do NOT focus on only one standard unless the question specifically asks\n\n"
+
         "Then produce ONLY the final answer as instructed below.\n\n"
         f"{final_system_prompt}"
     )
 
     messages = [
         {"role": "system", "content": chain_prompt},
+        {"role": "system", "content": f"CONTEXT:\n{context}"},
         {"role": "user", "content": user_question},
     ]
 
@@ -371,6 +384,31 @@ def normalize_page_text(text: str) -> str:
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines()]
     lines = [ln for ln in lines if ln]  # drop empty
     return "\n".join(lines)
+
+def enrich_query_for_rag(question: str) -> str:
+    q = question.lower()
+
+    subject_hints = []
+
+    if any(w in q for w in ["ind as", "financial", "asset", "liability", "consolidation"]):
+        subject_hints.append("financial reporting accounting")
+
+    if any(w in q for w in ["audit", "sa ", "assurance"]):
+        subject_hints.append("auditing")
+
+    if any(w in q for w in ["gst", "input tax", "itc"]):
+        subject_hints.append("indirect tax gst")
+
+    if any(w in q for w in ["tds", "income tax", "section 80"]):
+        subject_hints.append("direct tax")
+
+    if any(w in q for w in ["company act", "directors", "board"]):
+        subject_hints.append("law")
+
+    if subject_hints:
+        return question + " " + " ".join(subject_hints)
+
+    return question
 
 
 def detect_headings_for_page(page_text: str) -> Dict[str, Optional[str]]:
@@ -460,8 +498,8 @@ def detect_query_focus(question: str) -> str:
 
 
 async def is_ca_related_question(question: str) -> bool:
-    if is_basic_ca_question(question):
-        return True
+    # if is_basic_ca_question(question):
+    #     return True
 
     system = (
         # "You are a classifier. Decide if the user question is even loosely "
@@ -694,6 +732,62 @@ async def reject_student(user_id: str, admin=Depends(get_current_admin)):
     return {"message": "Student rejected"}
 
 
+# ============================================================
+# CA DASHBOARD ROUTES
+# ============================================================
+
+@app.get("/dashboard/tree")
+async def get_dashboard_tree(user=Depends(get_current_user)):
+    cursor = dashboard_collection.find().sort("order", 1)
+
+    tree = {}
+
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+
+        level = doc.get("level", "Others")
+        subject = doc.get("subject", "General")
+        module = doc.get("module", "General")
+        chapter = doc.get("chapter", "General")
+
+        tree.setdefault(level, {})
+        tree[level].setdefault(subject, {})
+        tree[level][subject].setdefault(module, {})
+        tree[level][subject][module].setdefault(chapter, [])
+
+        tree[level][subject][module][chapter].append(doc)
+
+    return tree
+
+
+@app.post("/dashboard/add")
+async def add_dashboard_resource(
+    level: str = Form(...),
+    subject: str = Form(...),
+    module: str = Form(...),
+    chapter: str = Form(...),
+    unit: str = Form(...),
+    title: str = Form(...),
+    pdf_url: str = Form(...),
+    video_url: str = Form(""),
+    admin=Depends(get_current_admin),
+):
+    await dashboard_collection.insert_one({
+        "level": level,
+        "subject": subject,
+        "module": module,
+        "chapter": chapter,
+        "unit": unit,
+        "title": title,
+        "pdf_url": pdf_url,
+        "video_url": video_url,
+        "created_at": datetime.utcnow()
+    })
+
+    return {"message": "Added successfully"}
+
+
+
 # ---------- Chat (RAG) ----------
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
@@ -712,7 +806,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
             return ChatResponse(
                 answer=(
                     "This assistant is designed for Indian CA students. "
-                    "Please ask a question related to accounting, tax, audit, law, "
+                    "Please ask a question related to CA topics such as accounting, tax, audit, law, "
                     "or CA exams (Foundation / Inter / Final)."
                 ),
                 sources=[],
@@ -748,23 +842,50 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         # --------------------------------------------------
         # 3. RAG FLOW (Pinecone)
         # --------------------------------------------------
-        query_embedding = await embed_single(req.message)
-        # namespace = "CA_FINAL"
+        # 1. Query enrichment
+        rag_query = enrich_query_for_rag(req.message)
+        query_embedding = await embed_single(rag_query)
 
-        res = index.query(
-            vector=query_embedding,
-            top_k=12,
-            include_metadata=True,
-            # namespace=namespace,
-        )
+        # 2. Subject detection
+        detected_subject = detect_subject(req.message)
 
+        query_kwargs = {
+            "vector": query_embedding,
+            "top_k": 20,
+            "include_metadata": True,
+        }
+
+        if detected_subject:
+            query_kwargs["filter"] = {
+                "subject": {"$eq": detected_subject}
+            }
+
+        res = index.query(**query_kwargs)
         matches = res.get("matches") or []
-        # 🔥 REMOVE WEAK MATCHES
-        matches = [
-            m for m in matches
-            if m.get("score", 0) > 0.70
-            or m.get("metadata", {}).get("type") == "text"
-        ]
+
+        # fallback search without filter
+        if len(matches) < 4 and detected_subject:
+            res = index.query(
+                vector=query_embedding,
+                top_k=20,
+                include_metadata=True,
+            )
+            matches = res.get("matches") or []
+
+        # sort by score
+        matches = sorted(matches, key=lambda m: m.get("score", 0), reverse=True)
+
+        # dynamic threshold
+        q_len = len(req.message.split())
+        threshold = 0.52 if q_len <= 6 else 0.60 if q_len <= 15 else 0.65
+
+        filtered_matches = [m for m in matches if m.get("score", 0) >= threshold]
+
+        if not filtered_matches:
+            filtered_matches = matches[:5]
+
+        matches = filtered_matches
+
 
 
         if not matches:
@@ -988,6 +1109,26 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         )
 
 
+def detect_subject(question: str) -> Optional[str]:
+
+    q = question.lower()
+
+    if any(w in q for w in ["ind as", "asset", "liability", "financial statement", "consolidation"]):
+        return "financial reporting"
+
+    if any(w in q for w in ["audit", "sa ", "assurance", "audit report"]):
+        return "audit"
+
+    if any(w in q for w in ["gst", "itc", "input tax", "cgst", "sgst"]):
+        return "indirect_tax"
+
+    if any(w in q for w in ["income tax", "tds", "section 80", "capital gains"]):
+        return "direct_tax"
+
+    if any(w in q for w in ["company act", "director", "board", "mca"]):
+        return "law"
+
+    return None
 
 
 # ---------- Admin: upload PDF (enhanced: tables + figures extraction) ----------
@@ -1574,3 +1715,58 @@ def chunk_text_advanced(text: str, chunk_size: int = 1000, overlap: int = 100):
 #         "message": "Upload successful",
 #         "total_chunks_indexed": len(vectors)
 #     }
+
+
+# dashboard_collection = db["ca_dashboard"]
+
+# @app.get("/dashboard/tree")
+# async def get_dashboard_tree(user=Depends(get_current_user)):
+#     cursor = dashboard_collection.find().sort("order", 1)
+
+#     tree = {}
+
+#     async for doc in cursor:
+#         doc["_id"] = str(doc["_id"])
+
+#         level = doc.get("level", "Other")
+#         subject = doc.get("subject", "General")
+#         module = doc.get("module", "General")
+#         chapter = doc.get("chapter", "General")
+
+#         tree.setdefault(level, {})
+#         tree[level].setdefault(subject, {})
+#         tree[level][subject].setdefault(module, {})
+#         tree[level][subject][module].setdefault(chapter, [])
+
+#         tree[level][subject][module][chapter].append(doc)
+
+#     return tree
+
+
+
+
+# @app.post("/dashboard/add")
+# async def add_dashboard_resource(
+#     level: str = Form(...),
+#     subject: str = Form(...),
+#     module: str = Form(...),
+#     chapter: str = Form(...),
+#     unit: str = Form(...),
+#     title: str = Form(...),
+#     pdf_url: str = Form(...),
+#     video_url: str = Form(""),
+#     admin=Depends(get_current_admin),
+# ):
+#     await dashboard_collection.insert_one({
+#         "level": level,
+#         "subject": subject,
+#         "module": module,
+#         "chapter": chapter,
+#         "unit": unit,
+#         "title": title,
+#         "pdf_url": pdf_url,
+#         "video_url": video_url,
+#         "created_at": datetime.utcnow()
+#     })
+
+#     return {"message": "Added"}
