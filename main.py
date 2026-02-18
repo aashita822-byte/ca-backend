@@ -35,6 +35,7 @@ from fastapi import APIRouter
 
 from config import settings
 from typing import Literal
+from email_service import send_admin_signup_notification
 
 # Optional libs for table/chart extraction + OCR
 # Make sure to pip install: pdf2image, pdfplumber, pillow, pytesseract
@@ -679,7 +680,12 @@ async def signup(user: UserCreate):
             "created_at": datetime.utcnow(),
         }
     )
-
+    # simple email
+    try:
+        send_admin_signup_notification(user.dict())
+    except Exception as e:
+        print("Email failed:", e)
+        
     return {
         "message": "Signup successful. Please wait for admin approval before logging in."
     }
