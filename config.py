@@ -21,7 +21,14 @@ class Settings(BaseSettings):
 
     # Frontend
     FRONTEND_ORIGIN: str = "*"
-
+    # 🔥 EMAIL SETTINGS (ADD THESE)
+    EMAIL_HOST: str
+    EMAIL_PORT: int = 587
+    EMAIL_USERNAME: str
+    EMAIL_PASSWORD: str
+    EMAIL_FROM: str
+    ADMIN_EMAIL: str
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
