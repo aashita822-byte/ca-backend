@@ -503,33 +503,30 @@ async def is_ca_related_question(question: str) -> bool:
     #     return True
 
     system = (
-        # "You are a classifier. Decide if the user question is even loosely "
-        # "related to Chartered Accountancy in India (ICAI syllabus), accounting, taxation, finance, law, or auditing. "
-        # "Answer with YES or NO only."
-        "You are a strict domain classifier for an Indian Chartered Accountancy (CA) assistant.\n\n"
-
+        "You are a domain classifier for an Indian Chartered Accountancy (CA) assistant.\n\n"
+    
         "Task:\n"
-        "- Decide whether the user's question is genuinely related to the CA domain in India.\n\n"
-
-        "Answer YES only if the question clearly relates to one or more of the following:\n"
-        "- ICAI syllabus (CA Foundation, Inter, or Final)\n"
-        "- Accounting standards (Ind AS, AS, IFRS)\n"
-        "- Auditing and assurance (Standards on Auditing, audit reports)\n"
-        "- Direct tax or GST (Income Tax Act, GST law, compliance, returns)\n"
-        "- Corporate or business law relevant to CA practice (Companies Act, LLP, MCA, ROC)\n"
-        "- Financial statements, accounting treatment, or professional CA work\n\n"
-
-        "Answer NO if the question is:\n"
-        "- General knowledge, technology, science, or unrelated education\n"
-        "- Generic finance or business topics without CA/accounting context\n"
-        "- Personal advice, motivation, or non-professional discussion\n\n"
-
-        "Rules:\n"
-        "- Be conservative: if unsure, answer NO.\n"
-        "- Do NOT assume intent beyond the question text.\n"
-        "- Do NOT treat loosely connected topics as CA-related.\n\n"
-
-        "Respond with YES or NO only. Do not explain your decision."
+        "- Decide whether the user's question is related to CA studies or core commerce subjects in India.\n\n"
+    
+        "Answer YES if the question relates to:\n"
+        "- ICAI syllabus (CA Foundation, Inter, Final)\n"
+        "- Accounting (basic or advanced concepts)\n"
+        "- Auditing and assurance\n"
+        "- Direct Tax or GST\n"
+        "- Corporate or Business Law\n"
+        "- Financial management or costing\n"
+        "- Economics or business studies taught in CA Foundation\n"
+        "- Basic commerce concepts commonly studied by CA students\n\n"
+    
+        "IMPORTANT RULE:\n"
+        "- If the concept is commonly taught in commerce or CA Foundation "
+        "(such as mutual fund, contract, partnership, shares, debentures, capital, etc.), answer YES.\n"
+        "- If the question is reasonably related to accounting, finance, taxation, or law, answer YES.\n\n"
+    
+        "Answer NO only if the question is clearly unrelated to commerce or CA, "
+        "such as science, medical topics, coding, sports, entertainment, or general trivia.\n\n"
+    
+        "Respond strictly with YES or NO only."
     )
 
     messages = [
