@@ -76,7 +76,7 @@ CA_ABBREVIATIONS = {
     "TDS": "Tax Deducted at Source",
     "AY": "Assessment Year",
     "PY": "Previous Year",
-    "IT": "Income Tax",
+    # "IT": "Income Tax",
 
     # =========================
     # CORPORATE LAW / MCA
