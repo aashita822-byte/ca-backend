@@ -36,7 +36,7 @@ from fastapi import APIRouter
 from config import settings
 from typing import Literal
 from email_service import send_admin_signup_notification
-
+from payment_router import router as payment_router
 # Optional libs for table/chart extraction + OCR
 # Make sure to pip install: pdf2image, pdfplumber, pillow, pytesseract
 try:
@@ -61,6 +61,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(payment_router, prefix="/payments", tags=["payments"])
 CHAT_URL = "https://api.openai.com/v1/chat/completions"
 EMBED_URL = "https://api.openai.com/v1/embeddings"
 
