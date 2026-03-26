@@ -56,7 +56,7 @@ app = FastAPI(title="CA Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_ORIGIN, "*"],  # relax for demo
+    allow_origins=[settings.FRONTEND_ORIGIN],  # relax for demo
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -105,6 +105,8 @@ class UserCreate(BaseModel):
     ca_level: str
     ca_attempt: int
     role: str = "student"
+    plan: Optional[str] = "free"          # "free" | "paid"
+    payment_id: Optional[str] = None      # Razorpay payment ID (paid only)
 
 
 class UserLogin(BaseModel):
@@ -120,6 +122,8 @@ class Token(BaseModel):
 class UserOut(BaseModel):
     email: str
     role: str
+    plan: Optional[str] = "free"
+    subscription_status: Optional[str] = "free"
 
 
 class ChatResponse(BaseModel):
@@ -664,6 +668,16 @@ async def signup(user: UserCreate):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    plan = (user.plan or "free").lower()
+    if plan not in ("free", "paid"):
+        plan = "free"
+
+    # paid plan requires a payment_id
+    if plan == "paid" and not user.payment_id:
+        raise HTTPException(status_code=400, detail="payment_id is required for paid plan")
+
+    now = datetime.utcnow()
+
     await users_collection.insert_one(
         {
             "email": user.email,
@@ -672,17 +686,31 @@ async def signup(user: UserCreate):
             "phone": user.phone,
             "ca_level": user.ca_level,
             "ca_attempt": user.ca_attempt,
-            "role": "student",   # force student
-            "status": "pending",
-            "created_at": datetime.utcnow(),
+            "role": "student",            # always force student on self-signup
+            "status": "approved",         # auto-approved; admin can review later
+
+            # ── Subscription fields ──────────────────────────────
+            "plan": plan,                 # "free" | "paid"
+            "subscription_status": "active" if plan == "paid" else "free",
+            "payment_id": user.payment_id,
+            "plan_activated_at": now if plan == "paid" else None,
+            # next billing date = 30 days from now for paid users
+            "plan_expires_at": (
+                datetime(now.year, now.month + 1 if now.month < 12 else 1,
+                         now.day,
+                         tzinfo=None)
+                if plan == "paid" else None
+            ),
+            # ─────────────────────────────────────────────────────
+            "created_at": now,
         }
     )
-    # simple email
+
     try:
-        send_admin_signup_notification(user.dict())
+        send_admin_signup_notification({**user.dict(), "plan": plan})
     except Exception as e:
         print("Email failed:", e)
-        
+
     return {
         "message": "Signup successful. Please wait for admin approval before logging in."
     }
@@ -704,7 +732,12 @@ async def login(data: UserLogin):
 
 @app.get("/auth/me", response_model=UserOut)
 async def me(user=Depends(get_current_user)):
-    return UserOut(email=user["email"], role=user["role"])
+    return UserOut(
+        email=user["email"],
+        role=user["role"],
+        plan=user.get("plan", "free"),
+        subscription_status=user.get("subscription_status", "free"),
+    )
 
 @app.get("/admin/students")
 async def get_all_students(admin=Depends(get_current_admin)):
