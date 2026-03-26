@@ -35,8 +35,10 @@ from fastapi import APIRouter
 
 from config import settings
 from typing import Literal
-from email_service import send_admin_signup_notification
+from email_service import send_admin_signup_notification, send_password_reset_otp
+import secrets
 from payment_router import router as payment_router
+
 # Optional libs for table/chart extraction + OCR
 # Make sure to pip install: pdf2image, pdfplumber, pillow, pytesseract
 try:
@@ -56,7 +58,7 @@ app = FastAPI(title="CA Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_ORIGIN],  # relax for demo
+    allow_origins=[settings.FRONTEND_ORIGIN],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -741,7 +743,107 @@ async def me(user=Depends(get_current_user)):
         subscription_status=user.get("subscription_status", "free"),
     )
 
-@app.get("/admin/students")
+
+# ── Password reset models ────────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class VerifyOTPRequest(BaseModel):
+    email: str
+    otp: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    otp: str
+    new_password: str
+
+
+# ── POST /auth/forgot-password ───────────────────────────────────────────────
+@app.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest):
+    user = await get_user_by_email(body.email)
+    # Always return success to avoid email enumeration
+    if not user:
+        return {"message": "If this email is registered, an OTP has been sent."}
+
+    otp = str(secrets.randbelow(900000) + 100000)   # 6-digit OTP
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+
+    await users_collection.update_one(
+        {"email": body.email},
+        {"$set": {
+            "reset_otp":        otp,
+            "reset_otp_expires": expires_at,
+        }}
+    )
+
+    try:
+        send_password_reset_otp(
+            email=body.email,
+            otp=otp,
+            name=user.get("name", "Student"),
+        )
+    except Exception as e:
+        print("OTP email failed:", e)
+        raise HTTPException(status_code=500, detail="Failed to send OTP email. Please try again.")
+
+    return {"message": "If this email is registered, an OTP has been sent."}
+
+
+# ── POST /auth/verify-otp ────────────────────────────────────────────────────
+@app.post("/auth/verify-otp")
+async def verify_otp(body: VerifyOTPRequest):
+    user = await get_user_by_email(body.email)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid OTP or email.")
+
+    stored_otp     = user.get("reset_otp")
+    stored_expires = user.get("reset_otp_expires")
+
+    if not stored_otp or not stored_expires:
+        raise HTTPException(status_code=400, detail="No OTP requested. Please request a new one.")
+
+    if datetime.utcnow() > stored_expires:
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+
+    if stored_otp != body.otp.strip():
+        raise HTTPException(status_code=400, detail="Incorrect OTP. Please try again.")
+
+    return {"message": "OTP verified."}
+
+
+# ── POST /auth/reset-password ────────────────────────────────────────────────
+@app.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    user = await get_user_by_email(body.email)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid request.")
+
+    stored_otp     = user.get("reset_otp")
+    stored_expires = user.get("reset_otp_expires")
+
+    if not stored_otp or not stored_expires:
+        raise HTTPException(status_code=400, detail="No OTP requested. Please start over.")
+
+    if datetime.utcnow() > stored_expires:
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+
+    if stored_otp != body.otp.strip():
+        raise HTTPException(status_code=400, detail="Incorrect OTP.")
+
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+
+    await users_collection.update_one(
+        {"email": body.email},
+        {"$set":   {"password_hash": hash_password(body.new_password)},
+         "$unset": {"reset_otp": "", "reset_otp_expires": ""}}
+    )
+
+    return {"message": "Password reset successfully. You can now log in."}
+
+
 async def get_all_students(admin=Depends(get_current_admin)):
     cursor = users_collection.find({"role": "student"})
     students = []
