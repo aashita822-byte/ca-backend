@@ -44,3 +44,4 @@ python-dotenv
 python-jose[cryptography]
 python-multipart
 uvicorn[standard]
+razorpay
