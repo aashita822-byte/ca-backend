@@ -938,6 +938,63 @@ async def add_dashboard_resource(
     return {"message": "Added successfully"}
 
 
+def build_personalized_layer(user: dict) -> str:
+    name = user.get("name", "Student").split()[0]
+    # attempt = user.get("ca_attempt", 1)
+    
+    encouragement = (
+        f"provide extra clarity in topics, subjective detailed answers, motivation, "
+        "and simplify difficult parts."
+    )
+
+    return f"""
+PERSONALIZATION CONTEXT:
+- Student Name: {name}
+
+INSTRUCTIONS:
+- Occasionally address the student as {name}
+- Keep tone supportive and engaging
+- {encouragement}
+"""
+
+
+def build_personalized_layer(user: dict) -> str:
+    name = user.get("name", "Student").split()[0]
+    level = user.get("ca_level", "Foundation")
+    # attempt = user.get("ca_attempt", 1)
+
+    # 🎯 Level-based teaching style
+    level_guidance = {
+        "Foundation": (
+            "Explain in very simple language. Focus on basic concepts, definitions, "
+            "and easy examples. Avoid heavy technical jargon."
+        ),
+        "Intermediate": (
+            "Explain with clarity and practical understanding. Include examples "
+            "and connect concepts logically."
+        ),
+        "Final": (
+            "Provide detailed, professional-level explanation. Include case-based "
+            "understanding, depth, and ICAI exam perspective."
+        ),
+    }
+
+    encouragement = (
+        f"provide extra clarity in topics, subjective detailed answers, motivation, "
+        "and simplify difficult parts."
+    )
+
+    return f"""
+PERSONALIZATION CONTEXT:
+- Student Name: {name}
+- Level: {level}
+
+INSTRUCTIONS:
+- Occasionally address the student as {name}
+- Teaching style: {level_guidance.get(level, level_guidance["Foundation"])}
+- Keep tone supportive and engaging
+- {encouragement}
+"""
 
 # ---------- Chat (RAG) ----------
 @app.post("/chat", response_model=ChatResponse)
@@ -1037,10 +1094,11 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
         matches = filtered_matches
 
-
+        personal_context = build_personalized_layer(user)
 
         if not matches:
             system_prompt = (
+                personal_context + "\n\n" +
                 "You are a senior Indian Chartered Accountant (CA) faculty with experience "
                 "in teaching and evaluating ICAI exams (Foundation, Inter, Final).\n\n"
 
@@ -1149,6 +1207,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
         if req.mode == "discussion":
             system_prompt = (
+                personal_context + "\n\n" +
                 "You are an expert Indian CA tutor simulating a healthy academic discussion "
                 "between two CA students preparing for exams.\n\n"
 
@@ -1177,6 +1236,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
         else:
             system_prompt = (
+                personal_context + "\n\n" +
                 "You are an expert Indian Chartered Accountant (CA) tutor preparing students "
                 "for ICAI exams (Foundation, Inter, Final).\n\n"
 
