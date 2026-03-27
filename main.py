@@ -940,26 +940,6 @@ async def add_dashboard_resource(
 
 def build_personalized_layer(user: dict) -> str:
     name = user.get("name", "Student").split()[0]
-    # attempt = user.get("ca_attempt", 1)
-    
-    encouragement = (
-        f"provide extra clarity in topics, subjective detailed answers, motivation, "
-        "and simplify difficult parts."
-    )
-
-    return f"""
-PERSONALIZATION CONTEXT:
-- Student Name: {name}
-
-INSTRUCTIONS:
-- Occasionally address the student as {name}
-- Keep tone supportive and engaging
-- {encouragement}
-"""
-
-
-def build_personalized_layer(user: dict) -> str:
-    name = user.get("name", "Student").split()[0]
     level = user.get("ca_level", "Foundation")
     # attempt = user.get("ca_attempt", 1)
 
