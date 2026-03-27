@@ -56,13 +56,22 @@ except Exception:
 # ---------- FastAPI app & CORS ----------
 app = FastAPI(title="CA Chatbot")
 
+# Build allowed origins — supports comma-separated list in .env
+# e.g. FRONTEND_ORIGIN=https://myapp.vercel.app,https://www.myapp.com
+_raw_origin = settings.FRONTEND_ORIGIN.strip()
+if _raw_origin == "*":
+    _allow_origins = ["*"]
+else:
+    _allow_origins = [o.strip() for o in _raw_origin.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    # allow_origins=[settings.FRONTEND_ORIGIN],
+    allow_origins=_allow_origins,
     allow_origin_regex=r"https://.*\.vercel\.app",  # covers all Vercel preview URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(payment_router, prefix="/payments", tags=["payments"])
@@ -845,6 +854,7 @@ async def reset_password(body: ResetPasswordRequest):
     return {"message": "Password reset successfully. You can now log in."}
 
 
+@app.get("/admin/students")
 async def get_all_students(admin=Depends(get_current_admin)):
     cursor = users_collection.find({"role": "student"})
     students = []
