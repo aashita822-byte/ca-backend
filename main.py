@@ -58,7 +58,8 @@ app = FastAPI(title="CA Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_ORIGIN],
+    # allow_origins=[settings.FRONTEND_ORIGIN],
+    allow_origin_regex=r"https://.*\.vercel\.app",  # covers all Vercel preview URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
