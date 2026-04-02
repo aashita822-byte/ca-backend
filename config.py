@@ -1,10 +1,11 @@
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     # Database
     MONGO_URI: str
-    MONGO_DB: str = "ca_chatbot"
+    MONGO_DB: str = "ca-cs-vector-db-index"
 
     # Auth
     JWT_SECRET: str
@@ -17,7 +18,7 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str
     LLM_MODEL: str = "gpt-4.1"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_MODEL: str = "text-embedding-3-large"
 
     # Frontend
     FRONTEND_ORIGIN: str = "*"
@@ -33,6 +34,24 @@ class Settings(BaseSettings):
     # Razorpay
     RAZORPAY_KEY_ID: str
     RAZORPAY_KEY_SECRET: str
+
+      # ── AWS S3 ────────────────────────────────────────────────────────────────
+    # All four fields must be set in .env for S3 to be used.
+    # If any are missing, the app falls back to local file storage silently.
+    AWS_ACCESS_KEY_ID:     Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_REGION:            str           = "ap-south-1"
+    AWS_S3_BUCKET:         Optional[str] = None
+    # Set to "false" if your bucket has ACLs disabled (new AWS default).
+    # When false, 7-day presigned URLs are generated instead.
+    AWS_S3_PUBLIC:         str           = "true"
+ 
+    # ── Optional tuning ───────────────────────────────────────────────────────
+    EMBED_BATCH_SIZE:          int   = 12
+    EMBED_TIMEOUT_SECS:        int   = 120
+    EMBED_MAX_RETRIES:         int   = 3
+    EMBED_BACKOFF_BASE:        float = 1.8
+    MAX_TEXT_LENGTH_FOR_EMBED: int   = 8000
 
     model_config = SettingsConfigDict(
         env_file=".env",
