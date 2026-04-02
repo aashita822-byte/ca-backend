@@ -46,3 +46,4 @@ python-multipart
 uvicorn[standard]
 razorpay
 boto3
+docling
