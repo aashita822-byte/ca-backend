@@ -1,69 +1,37 @@
 """
 LIGHTWEIGHT Fast Parser for CA Study Material PDFs
-(pdfplumber-only — no docling/PyTorch dependency)
 
 Optimized for:
 - Text-heavy CA PDFs (law, accounting, tax, audit)
 - Accurate page number tracking per element
-- Heading detection for section-level metadata
+- Better heading detection for section-level metadata
 - Table extraction via pdfplumber
 
-Drop-in replacement for the docling-based parser.
-Processing time: 2-8 seconds per PDF.
+Images: intentionally disabled — CA PDFs are text/table documents.
+Processing time: 5-15 seconds per PDF.
 """
 
-import re
+from docling.document_converter import DocumentConverter
 import pdfplumber
 from typing import List, Dict, Any
 from pathlib import Path
 
-print("⚡ FAST Parser loaded (pdfplumber-only, no docling)")
+print("⚡ FAST Parser loaded (CA-optimized, page-aware)")
 
 
 class FastDoclingParser:
     """
-    Lightweight CA-optimized parser using pdfplumber only.
+    Fast CA-optimized parser.
 
     Produces:
-    - ✅ Text elements with accurate page numbers
-    - ✅ Heading detection (numbered sections, ALLCAPS headings)
-    - ✅ Table extraction
+    - ✅ Text elements with page numbers
+    - ✅ Accurate heading detection (numbered sections, ALLCAPS headings)
+    - ✅ Table extraction via pdfplumber
     - ❌ Images — intentionally skipped (CA PDFs are text/table only)
     """
 
-    # ── Heading detection ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_heading(text: str, font_size: float = None, avg_font_size: float = None) -> bool:
-        """
-        Detect headings in CA legal/accounting documents.
-
-        Matches:
-          - Numbered sections: 1. Introduction / 2.3 Application
-          - ALL-CAPS short lines: DEFINITIONS, PRELIMINARY
-          - Clause-style: Section 2(1) / Clause (a)
-          - Larger font size than average (when font info available)
-        """
-        t = text.strip()
-        if not t or len(t) > 120:
-            return False
-
-        # Font size based detection (most reliable)
-        if font_size and avg_font_size and font_size > avg_font_size * 1.1:
-            return True
-
-        # Numbered section headings: "1.", "2.3", "Section 1", "Clause 5"
-        if re.match(r"^(\d+\.)+\s+\w", t):
-            return True
-        if re.match(r"^(section|clause|rule|schedule|chapter|part)\s+\d", t, re.IGNORECASE):
-            return True
-
-        # ALL CAPS heading (short, meaningful)
-        words = t.split()
-        if len(words) <= 8 and t == t.upper() and any(c.isalpha() for c in t) and len(t) > 3:
-            return True
-
-        return False
+    def __init__(self):
+        self.converter = DocumentConverter()
 
     # ── Table extraction ──────────────────────────────────────────────────────
 
@@ -74,7 +42,7 @@ class FastDoclingParser:
             with pdfplumber.open(file_path) as pdf:
                 for page_num, page in enumerate(pdf.pages, start=1):
                     page_tables = page.extract_tables()
-                    for table_index, table in enumerate(page_tables or []):
+                    for table_index, table in enumerate(page_tables):
                         if not table or len(table) < 2:
                             continue
                         cleaned = []
@@ -96,178 +64,171 @@ class FastDoclingParser:
             print(f"  ⚠️  Table extraction error: {e}")
         return tables
 
+    # ── Heading detection ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_heading(text: str) -> bool:
+        """
+        Detect headings in CA legal/accounting documents.
+
+        Matches:
+          - Markdown headings: ## Introduction
+          - Numbered sections: 1. Introduction / 2.3 Application
+          - ALL-CAPS short lines: DEFINITIONS, PRELIMINARY
+          - Clause-style: Section 2(1) / Clause (a)
+        """
+        t = text.strip()
+        if not t or len(t) > 120:
+            return False
+        if t.startswith("#"):
+            return True
+        import re
+        # Numbered section headings: "1.", "2.3", "Section 1", "Clause 5"
+        if re.match(r"^(\d+\.)+\s+\w", t):
+            return True
+        if re.match(r"^(section|clause|rule|schedule|chapter|part)\s+\d", t, re.IGNORECASE):
+            return True
+        # ALL CAPS heading (at least 3 words or one meaningful word)
+        words = t.split()
+        if len(words) <= 8 and t == t.upper() and any(c.isalpha() for c in t):
+            return True
+        return False
+
     # ── Main parse ────────────────────────────────────────────────────────────
 
     def parse_pdf_fast(self, file_path: str) -> Dict[str, Any]:
         """
         Parse PDF: extract text elements with page numbers + tables.
-        Uses pdfplumber only — no ML models required.
+
+        Strategy:
+        1. Use Docling to get structured text (handles multi-column, headers)
+        2. Use pdfplumber page-text to assign page numbers to each element
+        3. Use pdfplumber for table extraction
         """
         print(f"  ⚡ Parsing: {Path(file_path).name}")
 
-        elements = []
-        total_pages = 0
+        # ── Step 1: Docling text extraction ───────────────────────────────────
+        result       = self.converter.convert(file_path)
+        raw_elements = self._extract_elements_from_docling(result)
 
-        try:
-            with pdfplumber.open(file_path) as pdf:
-                total_pages = len(pdf.pages)
+        # ── Step 2: Assign page numbers via pdfplumber ────────────────────────
+        page_texts = self._extract_page_texts(file_path)
+        elements   = self._assign_pages(raw_elements, page_texts)
 
-                # First pass: collect all font sizes to compute average
-                all_font_sizes = []
-                for page in pdf.pages:
-                    try:
-                        chars = page.chars or []
-                        all_font_sizes.extend([c.get("size", 0) for c in chars if c.get("size")])
-                    except Exception:
-                        pass
-
-                avg_font_size = (sum(all_font_sizes) / len(all_font_sizes)) if all_font_sizes else 12.0
-
-                # Second pass: extract text per page
-                for page_num, page in enumerate(pdf.pages, start=1):
-                    try:
-                        # Extract words with font info grouped into lines
-                        page_elements = self._extract_page_elements(page, page_num, avg_font_size)
-                        elements.extend(page_elements)
-                    except Exception as e:
-                        print(f"  ⚠️  Page {page_num} extraction error: {e}")
-                        # Fallback: plain text extract
-                        text = page.extract_text() or ""
-                        for para in text.split("\n\n"):
-                            para = para.strip()
-                            if para and len(para) > 20:
-                                elements.append({
-                                    "type": "paragraph",
-                                    "text": para,
-                                    "page": page_num,
-                                })
-
-        except Exception as e:
-            print(f"  ⚠️  PDF open error: {e}")
-            elements = [{"type": "paragraph", "text": "Could not extract text from document", "page": 1}]
-
-        # Extract tables
+        # ── Step 3: Table extraction ──────────────────────────────────────────
         tables = self.extract_tables_fast(file_path)
 
-        print(f"  ✅ Parsed: {len(elements)} elements, {len(tables)} tables, {total_pages} pages")
+        print(f"  ✅ Parsed: {len(elements)} elements, {len(tables)} tables, {len(page_texts)} pages")
 
         return {
             "elements": elements,
             "tables":   tables,
-            "images":   [],
+            "images":   [],   # CA PDFs: no image processing needed
             "metadata": {
                 "total_elements": len(elements),
                 "total_tables":   len(tables),
                 "total_images":   0,
-                "total_pages":    total_pages,
+                "total_pages":    len(page_texts),
                 "filename":       Path(file_path).name,
                 "fast_mode":      True,
             },
         }
 
-    def _extract_page_elements(
-        self,
-        page,
-        page_num: int,
-        avg_font_size: float,
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _extract_elements_from_docling(self, result) -> List[Dict[str, Any]]:
+        """Convert Docling output to a flat list of {type, text} elements."""
+        elements = []
+        try:
+            if hasattr(result.document, "export_to_markdown"):
+                md   = result.document.export_to_markdown()
+                for para in md.split("\n\n"):
+                    para = para.strip()
+                    if not para:
+                        continue
+                    # Strip markdown heading markers but preserve text
+                    clean = para.lstrip("#").strip()
+                    if not clean:
+                        continue
+                    typ = "heading" if (para.startswith("#") or self._is_heading(clean)) else "paragraph"
+                    elements.append({"type": typ, "text": clean})
+
+            elif hasattr(result.document, "export_to_dict"):
+                doc_dict = result.document.export_to_dict()
+                for item in doc_dict.get("texts", []):
+                    text = item.get("text", "").strip()
+                    if text:
+                        typ = "heading" if self._is_heading(text) else "paragraph"
+                        elements.append({"type": typ, "text": text})
+
+            else:
+                # Last resort: stringify
+                text = str(result.document)
+                for para in text.split("\n\n"):
+                    if para.strip():
+                        elements.append({"type": "paragraph", "text": para.strip()})
+
+        except Exception as e:
+            print(f"  ⚠️  Docling parse error: {e}")
+            elements = [{"type": "paragraph", "text": "Could not extract text from document"}]
+
+        return elements
+
+    @staticmethod
+    def _extract_page_texts(file_path: str) -> List[str]:
+        """Return list of raw text per page (index 0 = page 1)."""
+        pages = []
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    pages.append((page.extract_text() or "").lower())
+        except Exception as e:
+            print(f"  ⚠️  Page text extraction error: {e}")
+        return pages
+
+    @staticmethod
+    def _assign_pages(
+        elements: List[Dict[str, Any]],
+        page_texts: List[str],
     ) -> List[Dict[str, Any]]:
         """
-        Extract structured text elements from a single page.
-        Groups words into lines, then lines into paragraphs.
-        Detects headings via font size + text patterns.
+        Assign a page number to each element by substring matching.
+
+        For each element we search which page contains the first ~80 chars
+        of its text.  We walk pages forward from the last matched page to
+        keep assignment monotonically increasing.
         """
-        elements = []
-
-        # Use extract_words for font-size aware grouping
-        words = page.extract_words(
-            extra_attrs=["size", "fontname"],
-            keep_blank_chars=False,
-        ) or []
-
-        if not words:
-            # Fallback to plain text
-            text = page.extract_text() or ""
-            for para in text.split("\n\n"):
-                para = para.strip()
-                if para and len(para) > 20:
-                    elements.append({
-                        "type": "paragraph",
-                        "text": para,
-                        "page": page_num,
-                    })
+        if not page_texts:
+            # No page info available — assign page 1 to everything
+            for el in elements:
+                el["page"] = 1
             return elements
 
-        # Group words into lines by their vertical position (top coordinate)
-        lines: Dict[int, List] = {}
-        for word in words:
-            # Round top to nearest 3px to group words on the same line
-            line_key = round(word.get("top", 0) / 3) * 3
-            if line_key not in lines:
-                lines[line_key] = []
-            lines[line_key].append(word)
+        current_page = 1   # 1-indexed
 
-        # Sort lines top-to-bottom
-        sorted_lines = sorted(lines.items(), key=lambda x: x[0])
-
-        # Build line texts with average font size per line
-        line_data = []
-        for _, line_words in sorted_lines:
-            line_words_sorted = sorted(line_words, key=lambda w: w.get("x0", 0))
-            line_text = " ".join(w["text"] for w in line_words_sorted).strip()
-            if not line_text:
+        for el in elements:
+            snippet = el["text"][:80].lower().strip()
+            if not snippet:
+                el["page"] = current_page
                 continue
-            sizes = [w.get("size", avg_font_size) for w in line_words_sorted if w.get("size")]
-            line_avg_size = sum(sizes) / len(sizes) if sizes else avg_font_size
-            line_data.append((line_text, line_avg_size))
 
-        # Group lines into paragraphs / headings
-        current_para_lines = []
-        current_para_size  = avg_font_size
+            # Search from current page onwards (documents are sequential)
+            found = False
+            for pg_idx in range(current_page - 1, len(page_texts)):
+                if snippet[:40] in page_texts[pg_idx]:
+                    current_page = pg_idx + 1   # convert to 1-indexed
+                    found = True
+                    break
 
-        def flush_para():
-            if not current_para_lines:
-                return None
-            text = " ".join(current_para_lines).strip()
-            if len(text) < 15:
-                return None
-            is_head = self._is_heading(text, current_para_size, avg_font_size)
-            return {
-                "type": "heading" if is_head else "paragraph",
-                "text": text,
-                "page": page_num,
-            }
+            if not found:
+                # Fallback: try all pages (handles Docling reordering)
+                for pg_idx, pg_text in enumerate(page_texts):
+                    if snippet[:40] in pg_text:
+                        current_page = pg_idx + 1
+                        found = True
+                        break
 
-        for line_text, line_size in line_data:
-            is_head = self._is_heading(line_text, line_size, avg_font_size)
-
-            if is_head:
-                # Flush current paragraph first
-                el = flush_para()
-                if el:
-                    elements.append(el)
-                current_para_lines = []
-                # Heading is its own element
-                elements.append({
-                    "type": "heading",
-                    "text": line_text,
-                    "page": page_num,
-                })
-                current_para_size = avg_font_size
-            else:
-                # Check if font size changed significantly (new paragraph)
-                if current_para_lines and abs(line_size - current_para_size) > 1.5:
-                    el = flush_para()
-                    if el:
-                        elements.append(el)
-                    current_para_lines = []
-
-                current_para_lines.append(line_text)
-                current_para_size = line_size
-
-        # Flush remaining paragraph
-        el = flush_para()
-        if el:
-            elements.append(el)
+            el["page"] = current_page
 
         return elements
 
