@@ -1,32 +1,49 @@
-# Web framework
-fastapi
-uvicorn[standard]
-python-multipart
+# ============================================================
+# CA Study Materials - Vector DB Backend
+# IMAGE-FREE VERSION for faster deployment
+# ============================================================
+
+# Core FastAPI
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
 
 # Database
-pymongo
-motor
+pymongo>=4.5.0
+motor>=3.3.0
 
-# Auth
-python-jose[cryptography]
-passlib
+# Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
 
-# HTTP client
-httpx>=0.24
+# HTTP Client
+httpx>=0.25.0
 
-# AI / Embeddings
-openai>=1.12.0
-pinecone
+# Data validation
+pydantic>=2.4.0
+pydantic-settings>=2.0.0
 
-# PDF parsing
-pypdf>=3.15
+# Vector DB
+pinecone>=3.0.0
+
+# PDF Processing (text + tables only)
+pypdf>=3.15.0
 pdfplumber>=0.7.6
-Pillow>=9.5.0
+docling>=2.0.0
 
-# Config
-pydantic
-pydantic-settings
-python-dotenv>=1.0
+# AI/ML
+openai>=1.12.0
 
-# Cloud storage
-boto3
+# Utilities
+python-dotenv>=1.0.0
+razorpay>=1.4.0
+boto3>=1.26.0
+
+# ============================================================
+# REMOVED DEPENDENCIES (Image processing):
+# ============================================================
+# ❌ pdf2image
+# ❌ Pillow (PIL)
+# ❌ pytesseract
+# These were only used for image extraction/OCR
+# ============================================================
