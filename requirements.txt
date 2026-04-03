@@ -1,40 +1,48 @@
-# Web framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+fastapi 
+uvicorn[standard] 
+python-multipart 
+pymongo 
+motor 
+python-jose[cryptography] 
+passlib 
+httpx 
+pydantic 
+pinecone 
+pypdf 
+pydantic-settings
 
-# Database
-pymongo==4.6.0
-motor==3.3.2
-
-# Auth
-python-jose[cryptography]==3.3.0
-passlib==1.7.4
+openai>=1.12.0
 
 # HTTP client
 httpx>=0.24
 
-# AI / Embeddings
-openai>=1.12.0
-pinecone-client==3.0.3
 
-# PDF parsing — CRITICAL FOR DEPLOYMENT
-docling==1.3.0
+# PDF / extraction / OCR / images
 pypdf>=3.15
 pdfplumber>=0.7.6
+pdf2image>=1.16.0
 Pillow>=9.5.0
+pytesseract>=0.3.10
 
-# Config
-pydantic==2.5.3
-pydantic-settings==2.1.0
+# Utility
 python-dotenv>=1.0
-
-# Cloud storage
-boto3>=1.26.0
-botocore>=1.29.0
-
-# Image processing (for Vision API)
-aiofiles>=23.2.0
-
-# Additional utilities
-click>=8.1.0
+fastapi
+httpx
+jose
+motor
+passlib
+pdf2image
+pdfplumber
+Pillow
+pinecone
+pydantic
+pydantic-settings
+pymongo
+pypdf
+pytesseract
+python-dotenv
+python-jose[cryptography]
+python-multipart
+uvicorn[standard]
+razorpay
+boto3
