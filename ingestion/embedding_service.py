@@ -1,5 +1,4 @@
 import os
-import asyncio
 from config import settings
 from typing import List
 import httpx
