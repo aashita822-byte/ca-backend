@@ -96,14 +96,97 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 # Add near the top of main.py, after settings are loaded
 
+"""
+Add this to your main.py right after creating the FastAPI app.
+
+Replace any existing @app.on_event("startup") with this:
+"""
+
 @app.on_event("startup")
-async def validate_config():
-    if not settings.OPENAI_API_KEY or not settings.OPENAI_API_KEY.startswith("sk-"):
-        raise RuntimeError("OPENAI_API_KEY is missing or invalid in .env")
-    if not getattr(settings, "LLM_MODEL", ""):
-        raise RuntimeError("LLM_MODEL is not set in .env")
-    print(f"[startup] LLM_MODEL = {settings.LLM_MODEL}")
-    print(f"[startup] EMBEDDING_MODEL = {settings.EMBEDDING_MODEL}")
+async def startup_event():
+    """Startup validation - logs but doesn't crash."""
+    print("\n" + "="*70)
+    print("🚀 STARTUP VALIDATION")
+    print("="*70)
+    
+    # Check critical services
+    critical = {
+        "OPENAI_API_KEY": bool(settings.OPENAI_API_KEY),
+        "MONGO_URI": bool(settings.MONGO_URI and settings.MONGO_URI != "mongodb://localhost:27017"),
+        "PINECONE_API_KEY": bool(settings.PINECONE_API_KEY),
+        "JWT_SECRET": bool(settings.JWT_SECRET and settings.JWT_SECRET != "your-secret-key-change-in-production"),
+    }
+    
+    missing = [k for k, v in critical.items() if not v]
+    
+    # Log status
+    print("\n📋 Configuration Status:")
+    for key, present in critical.items():
+        symbol = "✅" if present else "❌"
+        print(f"  {symbol} {key}")
+    
+    # Log active models
+    print(f"\n🤖 Models:")
+    print(f"  - LLM: {settings.LLM_MODEL}")
+    print(f"  - Embedding: {settings.EMBEDDING_MODEL}")
+    
+    # Try connecting to critical services
+    print(f"\n🔗 Service Connections:")
+    
+    # Test MongoDB
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        test_mongo = AsyncIOMotorClient(
+            settings.MONGO_URI,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
+        await test_mongo.server_info()
+        print(f"  ✅ MongoDB")
+    except Exception as e:
+        print(f"  ❌ MongoDB: {type(e).__name__}")
+    
+    # Test Pinecone
+    try:
+        if settings.PINECONE_API_KEY:
+            import pinecone
+            pc = pinecone.Pinecone(api_key=settings.PINECONE_API_KEY)
+            pc.list_indexes()
+            print(f"  ✅ Pinecone")
+        else:
+            print(f"  ⚠️  Pinecone: API key not set")
+    except Exception as e:
+        print(f"  ⚠️  Pinecone: {type(e).__name__}")
+    
+    # Test OpenAI
+    try:
+        if settings.OPENAI_API_KEY:
+            import httpx
+            headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(
+                    "https://api.openai.com/v1/models/gpt-4o",
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    print(f"  ✅ OpenAI")
+                else:
+                    print(f"  ⚠️  OpenAI: {resp.status_code}")
+        else:
+            print(f"  ❌ OpenAI: API key not set")
+    except Exception as e:
+        print(f"  ⚠️  OpenAI: {type(e).__name__}")
+    
+    # Warn about missing critical keys
+    if missing:
+        print(f"\n⚠️  MISSING CONFIGURATION ({len(missing)}):")
+        for key in missing:
+            print(f"  - {key}")
+        print(f"\nSet these in your .env file or Render Environment variables")
+    else:
+        print(f"\n✅ All critical configuration loaded")
+    
+    print("="*70 + "\n")
 # ============================================================
 # PYDANTIC MODELS
 # ============================================================
