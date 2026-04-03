@@ -1,49 +1,33 @@
-fastapi 
-uvicorn[standard] 
-python-multipart 
-pymongo 
-motor 
-python-jose[cryptography] 
-passlib 
-httpx 
-pydantic 
-pinecone 
-pypdf 
-pydantic-settings
+# Web framework
+fastapi
+uvicorn[standard]
+python-multipart
 
-openai>=1.12.0
+# Database
+pymongo
+motor
+
+# Auth
+python-jose[cryptography]
+passlib
 
 # HTTP client
 httpx>=0.24
 
+# AI / Embeddings
+openai>=1.12.0
+pinecone
+docling          # ← was "dockling" (typo) — this was likely causing your deploy failure
 
-# PDF / extraction / OCR / images
+# PDF parsing
 pypdf>=3.15
 pdfplumber>=0.7.6
-pdf2image>=1.16.0
 Pillow>=9.5.0
-pytesseract>=0.3.10
 
-# Utility
-python-dotenv>=1.0
-fastapi
-httpx
-jose
-motor
-passlib
-pdf2image
-pdfplumber
-Pillow
-pinecone
+# Config
 pydantic
 pydantic-settings
-pymongo
-pypdf
-pytesseract
-python-dotenv
-python-jose[cryptography]
-python-multipart
-uvicorn[standard]
-razorpay
+python-dotenv>=1.0
+
+# Cloud storage
 boto3
-docling
