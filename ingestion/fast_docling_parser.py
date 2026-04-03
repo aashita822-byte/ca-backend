@@ -1,5 +1,5 @@
 """
-LIGHTWEIGHT Fast Parser for CA Study Material PDFs
+LIGHTWEIGHT Fast Parser for CA Study Material PDFs (IMAGE-FREE)
 
 Optimized for:
 - Text-heavy CA PDFs (law, accounting, tax, audit)
@@ -7,7 +7,7 @@ Optimized for:
 - Better heading detection for section-level metadata
 - Table extraction via pdfplumber
 
-Images: intentionally disabled — CA PDFs are text/table documents.
+Images: intentionally disabled for faster processing
 Processing time: 5-15 seconds per PDF.
 """
 
@@ -16,7 +16,7 @@ import pdfplumber
 from typing import List, Dict, Any
 from pathlib import Path
 
-print("⚡ FAST Parser loaded (CA-optimized, page-aware)")
+print("⚡ FAST Parser loaded (CA-optimized, page-aware, IMAGE-FREE)")
 
 
 class FastDoclingParser:
@@ -27,7 +27,7 @@ class FastDoclingParser:
     - ✅ Text elements with page numbers
     - ✅ Accurate heading detection (numbered sections, ALLCAPS headings)
     - ✅ Table extraction via pdfplumber
-    - ❌ Images — intentionally skipped (CA PDFs are text/table only)
+    - ❌ Images — intentionally disabled (faster processing)
     """
 
     def __init__(self):
@@ -123,7 +123,7 @@ class FastDoclingParser:
         return {
             "elements": elements,
             "tables":   tables,
-            "images":   [],   # CA PDFs: no image processing needed
+            "images":   [],   # Image processing disabled
             "metadata": {
                 "total_elements": len(elements),
                 "total_tables":   len(tables),
@@ -131,6 +131,7 @@ class FastDoclingParser:
                 "total_pages":    len(page_texts),
                 "filename":       Path(file_path).name,
                 "fast_mode":      True,
+                "images_disabled": True,
             },
         }
 
