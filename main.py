@@ -40,13 +40,18 @@
 # # from payment_router import router as payment_router
 
 # # # Optional libs for table/chart extraction + OCR
+# # # Make sure to pip install: pdf2image, pdfplumber, pillow, pytesseract
 # # try:
+# #     from pdf2image import convert_from_bytes
 # #     import pdfplumber
+# #     from PIL import Image
+# #     import pytesseract
 # # except Exception:
 # #     # If packages aren't installed, we still allow server to start; upload will raise helpful errors
 # #     convert_from_bytes = None
 # #     pdfplumber = None
 # #     Image = None
+# #     pytesseract = None
 
 # # # ---------- FastAPI app & CORS ----------
 # # app = FastAPI(title="CA Chatbot")
@@ -440,6 +445,7 @@
 # #         import docling
 # #         import pdfplumber
 # #         import fitz
+# #         from PIL import Image
         
 # #         health_status["dependencies"] = "all_available"
     
@@ -811,8 +817,10 @@
 
 
 # # # def ocr_text_from_image(img: Image.Image) -> str:
+# # #     if pytesseract is None:
 # # #         return ""
 # # #     try:
+# # #         txt = pytesseract.image_to_string(img, lang="eng")
 # # #         return txt.strip()
 # # #     except Exception:
 # # #         return ""
@@ -868,6 +876,7 @@
 # # #      {"page": n, "image_path": path, "thumb_path": thumb_path}
 # # #     """
 # # #     if convert_from_bytes is None or Image is None:
+# # #         raise HTTPException(status_code=500, detail="pdf2image / pillow not installed on server")
 
 # # #     pages = convert_from_bytes(file_bytes, dpi=dpi)
 # # #     metas: List[Dict[str, Any]] = []
@@ -1564,6 +1573,7 @@
 # # #     Upload pipeline:
 # # #      - extract page text chunks (existing)
 # # #      - extract tables via pdfplumber -> save CSVs + index short summary vectors
+# # #      - render page images (pdf2image) -> save thumbnails + run OCR -> index figure-summary vectors
 # # #     """
 # # #     if not file.filename.lower().endswith(".pdf"):
 # # #         raise HTTPException(status_code=400, detail="Only PDF allowed")
@@ -1753,6 +1763,7 @@
 # # #         thumb = im.get("thumb_path")
 # # #         img_path = im.get("image_path")
 # # #         ocr_text = ""
+# # #         if thumb and Image is not None and pytesseract is not None:
 # # #             try:
 # # #                 pil = Image.open(thumb)
 # # #                 ocr_text = ocr_text_from_image(pil)
@@ -3651,6 +3662,7 @@ async def upload_pdf_enhanced(
     unit:    Optional[str]     = Form(None),
     section: Optional[str]     = Form(None),
     custom_heading: Optional[str] = Form(None),
+    enable_image_descriptions: bool = Form(True),
     admin = Depends(get_current_admin),
 ):
     if not file.filename.lower().endswith(".pdf"):
@@ -3715,6 +3727,8 @@ async def upload_pdf_enhanced(
             file_path                 = temp_file_path,
             file_name                 = file.filename,
             extra_meta                = extra_meta,
+            enable_image_descriptions = enable_image_descriptions,
+            openai_api_key            = settings.OPENAI_API_KEY,
         )
 
         doc_record = {
@@ -3761,6 +3775,8 @@ async def upload_pdf_enhanced(
                 "total_vectors":      result["total_vectors"],
                 "text_chunks":        result["text_chunks"],
                 "table_chunks":       result["table_chunks"],
+                "image_chunks":       result["image_chunks"],
+                "total_images_found": result["total_images"],
                 "total_tables_found": result["total_tables"],
                 "storage_backend":    storage_backend,
             },
