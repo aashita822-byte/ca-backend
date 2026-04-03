@@ -17,7 +17,7 @@ httpx>=0.24
 # AI / Embeddings
 openai>=1.12.0
 pinecone
-docling          # ← was "dockling" (typo) — this was likely causing your deploy failure
+#docling          # ← was "dockling" (typo) — this was likely causing your deploy failure
 
 # PDF parsing
 pypdf>=3.15
