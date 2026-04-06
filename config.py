@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gpt-4.1"
     EMBEDDING_MODEL: str = "text-embedding-3-large"
 
+    # Gemini — used for cheap async conversation summarization
+    # Get a free key at: https://aistudio.google.com/app/apikey
+    # Leave blank to disable summarization (chat still works fully without it)
+    GEMINI_API_KEY: str = ""
+
     # Frontend
     FRONTEND_ORIGIN: str = "*"
 
@@ -35,7 +40,7 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str
     RAZORPAY_KEY_SECRET: str
 
-      # ── AWS S3 ────────────────────────────────────────────────────────────────
+    # ── AWS S3 ────────────────────────────────────────────────────────────────
     # All four fields must be set in .env for S3 to be used.
     # If any are missing, the app falls back to local file storage silently.
     AWS_ACCESS_KEY_ID:     Optional[str] = None
@@ -45,7 +50,7 @@ class Settings(BaseSettings):
     # Set to "false" if your bucket has ACLs disabled (new AWS default).
     # When false, 7-day presigned URLs are generated instead.
     AWS_S3_PUBLIC:         str           = "true"
- 
+
     # ── Optional tuning ───────────────────────────────────────────────────────
     EMBED_BATCH_SIZE:          int   = 12
     EMBED_TIMEOUT_SECS:        int   = 120
