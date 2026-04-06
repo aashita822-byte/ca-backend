@@ -1,4 +1,3 @@
-
 # backend/main.py
 import io
 import os
@@ -41,6 +40,7 @@ from email_service import send_admin_signup_notification, send_password_reset_ot
 from payment_router import router as payment_router
 from s3_service import upload_pdf_to_s3, delete_pdf_from_s3, is_s3_configured
 
+
 # ============================================================
 # APP + CORS
 # ============================================================
@@ -64,15 +64,23 @@ app.add_middleware(
 
 app.include_router(payment_router, prefix="/payments", tags=["payments"])
 
-CHAT_URL = "https://api.openai.com/v1/chat/completions"
+CHAT_URL  = "https://api.openai.com/v1/chat/completions"
 EMBED_URL = "https://api.openai.com/v1/embeddings"
+
+# Gemini Flash endpoint — cheap async summarization
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent"
+)
 
 
 # ============================================================
 # DB + EXTERNAL CLIENTS
 # ============================================================
 
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], default="pbkdf2_sha256", deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"], default="pbkdf2_sha256", deprecated="auto"
+)
 
 mongo_client         = AsyncIOMotorClient(settings.MONGO_URI)
 db                   = mongo_client[settings.MONGO_DB]
@@ -90,12 +98,19 @@ EMBED_MAX_RETRIES         = getattr(settings, "EMBED_MAX_RETRIES",         3)
 EMBED_BACKOFF_BASE        = getattr(settings, "EMBED_BACKOFF_BASE",        1.8)
 MAX_TEXT_LENGTH_FOR_EMBED = getattr(settings, "MAX_TEXT_LENGTH_FOR_EMBED", 8000)
 
-# Local uploads folder — used as fallback when S3 is not configured
+# Local uploads folder — fallback when S3 is not configured
 UPLOAD_ROOT = getattr(settings, "UPLOAD_ROOT", "./uploads")
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
-# Add near the top of main.py, after settings are loaded
+# ── Conversation memory constants ─────────────────────────────────────────────
+MAX_TURNS       = 10   # Q+A pairs kept in the sliding window per user
+SUMMARIZE_EVERY = 5    # trigger Gemini summarization every N new turns
+
+
+# ============================================================
+# STARTUP VALIDATION
+# ============================================================
 
 @app.on_event("startup")
 async def validate_config():
@@ -103,8 +118,14 @@ async def validate_config():
         raise RuntimeError("OPENAI_API_KEY is missing or invalid in .env")
     if not getattr(settings, "LLM_MODEL", ""):
         raise RuntimeError("LLM_MODEL is not set in .env")
-    print(f"[startup] LLM_MODEL = {settings.LLM_MODEL}")
+    gemini_key = getattr(settings, "GEMINI_API_KEY", "")
+    if not gemini_key:
+        print("[startup] WARNING: GEMINI_API_KEY not set — conversation summarization disabled")
+    print(f"[startup] LLM_MODEL       = {settings.LLM_MODEL}")
     print(f"[startup] EMBEDDING_MODEL = {settings.EMBEDDING_MODEL}")
+    print(f"[startup] Gemini summary  = {'enabled' if gemini_key else 'disabled (set GEMINI_API_KEY to enable)'}")
+
+
 # ============================================================
 # PYDANTIC MODELS
 # ============================================================
@@ -145,7 +166,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatMessage]] = None
-    mode: Optional[str] = "qa"
+    mode: Optional[str] = "qa"   # "qa" | "discussion"
 
 class UploadResponse(BaseModel):
     success: bool
@@ -216,7 +237,7 @@ router = APIRouter(prefix="/admin/materials")
 
 
 # ----------------------------------------------------------
-# UPLOAD  →  S3 (or local)  +  Pinecone  +  MongoDB
+# UPLOAD  ->  S3 (or local)  +  Pinecone  +  MongoDB
 # ----------------------------------------------------------
 
 @router.post("/upload_enhanced", response_model=UploadResponse)
@@ -259,9 +280,9 @@ async def upload_pdf_enhanced(
                     subject    = resolved_subject,
                 )
                 storage_backend = "s3"
-                print(f"[upload] ✅ S3 upload OK → {pdf_url}")
+                print(f"[upload] S3 upload OK -> {pdf_url}")
             except RuntimeError as s3_err:
-                print(f"[upload] ⚠️  S3 failed, falling back to local: {s3_err}")
+                print(f"[upload] S3 failed, falling back to local: {s3_err}")
                 pdf_url         = _save_local(content, safe_filename)
                 storage_backend = f"local_fallback (s3_error: {s3_err})"
         else:
@@ -358,7 +379,7 @@ async def upload_pdf_enhanced(
 
 
 # ----------------------------------------------------------
-# DELETE  →  Pinecone  +  S3/local  +  Mongo docs  +  Mongo dashboard
+# DELETE  ->  Pinecone  +  S3/local  +  Mongo docs  +  Mongo dashboard
 # ----------------------------------------------------------
 
 @router.delete("/{doc_id}", tags=["Admin Materials"])
@@ -420,6 +441,7 @@ async def delete_document(doc_id: str, admin=Depends(get_current_admin)):
 
 
 async def _delete_pinecone_by_source(source_filename: str) -> int:
+    """Delete all Pinecone vectors whose metadata.source == source_filename."""
     try:
         index_info = index.describe_index_stats()
         dim = index_info.get("dimension", 3072)
@@ -464,11 +486,13 @@ async def upload_service_health():
         "storage": "s3" if is_s3_configured() else "local",
         "s3_config": s3_cfg,
         "features": {
-            "aws_s3":            is_s3_configured(),
-            "docling_parser":    True,
-            "pdfplumber_tables": True,
-            "enhanced_chunking": True,
-            "pinecone_delete":   True,
+            "aws_s3":               is_s3_configured(),
+            "docling_parser":       True,
+            "pdfplumber_tables":    True,
+            "enhanced_chunking":    True,
+            "pinecone_delete":      True,
+            "conversation_memory":  True,
+            "gemini_summarization": bool(getattr(settings, "GEMINI_API_KEY", "")),
         },
     }
 
@@ -483,12 +507,12 @@ async def upload_service_health():
         try:
             bucket_ready = create_bucket_if_not_exists()
             health["s3_connectivity"] = (
-                f"✅ bucket '{s3_cfg['AWS_S3_BUCKET']}' ready"
+                f"bucket '{s3_cfg['AWS_S3_BUCKET']}' ready"
                 if bucket_ready else
-                "❌ bucket creation failed — check IAM permissions"
+                "bucket creation failed — check IAM permissions"
             )
         except Exception as e:
-            health["s3_connectivity"] = f"❌ {e}"
+            health["s3_connectivity"] = f"error: {e}"
 
     return health
 
@@ -497,7 +521,7 @@ app.include_router(router)
 
 
 # ============================================================
-# HELPERS  (used by upload route and chat route)
+# HELPERS  (upload + chat shared)
 # ============================================================
 
 def _save_local(content: bytes, safe_filename: str) -> str:
@@ -518,7 +542,7 @@ def _safe_unlink(path: Optional[str]) -> None:
 
 
 # ============================================================
-# EMBEDDING + LLM
+# EMBEDDING + LLM  (OpenAI)
 # ============================================================
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -547,9 +571,13 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
                         raise HTTPException(status_code=502, detail="Embedding length mismatch")
                     results.extend(emb_batch)
                     break
-                except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+                except (httpx.ReadTimeout, httpx.WriteTimeout,
+                        httpx.ConnectError, httpx.RemoteProtocolError) as exc:
                     if attempt >= EMBED_MAX_RETRIES:
-                        raise HTTPException(status_code=504, detail=f"Embedding timeout (batch {batch_idx}): {exc}")
+                        raise HTTPException(
+                            status_code=504,
+                            detail=f"Embedding timeout (batch {batch_idx}): {exc}"
+                        )
                     await asyncio.sleep(EMBED_BACKOFF_BASE ** (attempt - 1))
                 except httpx.HTTPStatusError as exc:
                     sc = exc.response.status_code
@@ -582,13 +610,19 @@ async def call_llm(messages: List[dict]) -> str:
         if resp.status_code == 404:
             raise HTTPException(
                 status_code=500,
-                detail=f"OpenAI model '{settings.LLM_MODEL}' not found. Check LLM_MODEL in your .env — valid options: gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini"
+                detail=(
+                    f"OpenAI model '{settings.LLM_MODEL}' not found. "
+                    "Check LLM_MODEL in .env — valid: gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini"
+                )
             )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
 
-async def call_llm_with_chain(*, user_question: str, context: str, final_system_prompt: str) -> str:
+async def call_llm_with_chain(
+    *, user_question: str, context: str, final_system_prompt: str
+) -> str:
+    """3-step internal reasoning chain. Only the final answer is returned."""
     chain_prompt = (
         "You are reasoning internally as an expert Indian CA tutor.\n\n"
         "INTERNAL STEPS (do NOT reveal):\n"
@@ -603,6 +637,173 @@ async def call_llm_with_chain(*, user_question: str, context: str, final_system_
         {"role": "system", "content": f"CONTEXT:\n{context}"},
         {"role": "user",   "content": user_question},
     ])
+
+
+# ============================================================
+# GEMINI FLASH  —  cheap async summarization
+# ============================================================
+
+async def call_gemini_flash(prompt: str) -> str:
+    """
+    Call Gemini 2.0 Flash for cheap rolling summarization.
+    Returns empty string on any failure — summarization is non-critical
+    and the chat always works without it.
+    """
+    gemini_key = getattr(settings, "GEMINI_API_KEY", "")
+    if not gemini_key:
+        return ""
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature":     0.2,
+            "maxOutputTokens": 500,
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                GEMINI_URL,
+                params={"key": gemini_key},
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"[Gemini] Summarization failed (non-critical): {e}")
+        return ""
+
+
+# ============================================================
+# CONVERSATION MEMORY  —  MongoDB helpers
+# ============================================================
+
+async def get_user_memory(user_email: str) -> Dict[str, Any]:
+    """
+    Fetch the sliding window of turns + rolling Gemini summary for a user.
+
+    Returns:
+        turns   - list of last MAX_TURNS Q+A pairs (each pair = 2 dicts)
+        summary - rolling Gemini summary string (empty for new users)
+        total   - lifetime turn counter (used to trigger summarization)
+    """
+    user = await users_collection.find_one(
+        {"email": user_email},
+        {"conversation_turns": 1, "conversation_summary": 1, "total_turns": 1},
+    )
+    if not user:
+        return {"turns": [], "summary": "", "total": 0}
+    return {
+        "turns":   user.get("conversation_turns",  []),
+        "summary": user.get("conversation_summary", ""),
+        "total":   user.get("total_turns",          0),
+    }
+
+
+async def save_turn_and_maybe_summarize(
+    user_email:     str,
+    question:       str,
+    answer:         str,
+    current_memory: Dict[str, Any],
+) -> None:
+    """
+    Background task — runs AFTER the response is returned to the user.
+
+    Steps:
+    1. Append new Q+A pair to the sliding window, trim to MAX_TURNS pairs.
+    2. Every SUMMARIZE_EVERY turns, call Gemini Flash to update the
+       rolling summary. The new summary merges the old one with fresh turns
+       so context keeps growing without the token window growing.
+
+    Any exception is caught and logged — this task never crashes the server.
+    """
+    now = datetime.utcnow().isoformat()
+
+    # Append new turn pair then trim to MAX_TURNS pairs (1 pair = 2 messages)
+    new_turns = current_memory["turns"] + [
+        {"role": "user",      "content": question, "ts": now},
+        {"role": "assistant", "content": answer,   "ts": now},
+    ]
+    new_turns = new_turns[-(MAX_TURNS * 2):]
+    new_total = current_memory["total"] + 1
+
+    update: Dict[str, Any] = {
+        "conversation_turns": new_turns,
+        "total_turns":        new_total,
+    }
+
+    # ── Trigger Gemini summarization every SUMMARIZE_EVERY turns ──────────────
+    if new_total % SUMMARIZE_EVERY == 0:
+        turns_text = "\n".join(
+            f"{t['role'].upper()}: {t['content'][:400]}"
+            for t in new_turns
+        )
+        existing_summary = current_memory["summary"]
+
+        gemini_prompt = (
+            "You are a learning tracker for an Indian CA (Chartered Accountancy) student.\n\n"
+            f"EXISTING SUMMARY:\n{existing_summary or 'None yet — this is the first summary.'}\n\n"
+            f"LATEST CONVERSATION TURNS:\n{turns_text}\n\n"
+            "Write an updated 3-5 sentence summary covering:\n"
+            "1. Which CA topics and subjects the student has studied so far\n"
+            "2. Their apparent weak areas or topics they asked about repeatedly\n"
+            "3. Their preferred language (Hindi / English / Hinglish)\n"
+            "4. Any useful patterns (e.g. exam-focused, concept-heavy, needs examples)\n\n"
+            "Rules:\n"
+            "- Be concise. Do NOT copy Q&A verbatim — compress into insights.\n"
+            "- Merge the existing summary with new observations; do not discard old info.\n"
+            "- Write in plain English. No bullet points. Max 5 sentences."
+        )
+
+        new_summary = await call_gemini_flash(gemini_prompt)
+        if new_summary:
+            update["conversation_summary"] = new_summary
+            update["summary_updated_at"]   = now
+            print(f"[memory] Summary updated for {user_email} (turn #{new_total})")
+
+    try:
+        await users_collection.update_one(
+            {"email": user_email},
+            {"$set": update},
+            upsert=False,
+        )
+    except Exception as e:
+        print(f"[memory] Failed to save turn for {user_email}: {e}")
+
+
+def build_memory_block(memory: Dict[str, Any]) -> str:
+    """
+    Format the rolling summary + recent turns into a single context block
+    prepended to every system prompt sent to GPT-4.1.
+
+    Token budget:
+      - Summary:      ~100 tokens   (5 sentences)
+      - Recent turns: ~500 tokens   (10 pairs x 50 tokens each)
+      - Total:        ~600 tokens   well within GPT-4.1 context window
+    """
+    parts: List[str] = []
+
+    if memory["summary"]:
+        parts.append(f"STUDENT LEARNING SUMMARY:\n{memory['summary']}")
+
+    if memory["turns"]:
+        recent_turns = memory["turns"][-(MAX_TURNS * 2):]
+        lines = []
+        for t in recent_turns:
+            role    = t.get("role", "user").upper()
+            content = t.get("content", "")[:500]   # cap per-turn chars to save tokens
+            lines.append(f"{role}: {content}")
+        parts.append("RECENT CONVERSATION (last turns):\n" + "\n".join(lines))
+
+    if not parts:
+        return ""   # new user — no memory block injected
+
+    return (
+        "=== STUDENT MEMORY ===\n"
+        + "\n\n".join(parts)
+        + "\n=== END MEMORY ===\n\n"
+    )
 
 
 # ============================================================
@@ -642,11 +843,22 @@ def detect_subject(question: str) -> Optional[str]:
 
 
 async def is_ca_related_question(question: str) -> bool:
+    # Fast-path: always allow questions about Dhvani itself
+    _dhvani_keywords = [
+        "dhvani", "founder", "promoter", "abhinav", "monali", "uma aggarwal",
+        "priyanka bansal", "edquezt", "safalta ki awaaz", "about dhvani",
+        "about the app", "who made", "who built", "who created", "who started",
+        "tell me about dhvani", "what is dhvani",
+    ]
+    if any(kw in question.lower() for kw in _dhvani_keywords):
+        return True
+
     system = (
         "You are a domain classifier for an Indian Chartered Accountancy (CA) assistant.\n\n"
-        "Answer YES if the question relates to: ICAI syllabus, Accounting, Auditing, "
-        "Direct Tax/GST, Corporate Law, Financial management, Costing, or basic "
-        "commerce concepts commonly studied by CA students.\n\n"
+        "Answer YES if the question relates to:\n"
+        "- ICAI syllabus, Accounting, Auditing, Direct Tax/GST, Corporate Law,\n"
+        "  Financial management, Costing, or basic commerce concepts studied by CA students.\n"
+        "- The Dhvani app, its founders, team, features, or anything about this platform.\n\n"
         "Answer NO only if it is clearly unrelated (science, coding, sports, entertainment).\n\n"
         "Respond with YES or NO only."
     )
@@ -657,7 +869,7 @@ async def is_ca_related_question(question: str) -> bool:
         ])
         return result.strip().upper().startswith("YES")
     except Exception:
-        return True
+        return True   # fail open — better to answer than to block
 
 
 # ============================================================
@@ -693,6 +905,10 @@ async def signup(user: UserCreate):
             if plan == "paid" else None
         ),
         "created_at": now,
+        # ── Memory fields — initialised empty for all new users ──────────────
+        "conversation_turns":   [],
+        "conversation_summary": "",
+        "total_turns":          0,
     })
     try:
         send_admin_signup_notification({**user.dict(), "plan": plan})
@@ -806,11 +1022,68 @@ async def reject_student(user_id: str, admin=Depends(get_current_admin)):
 
 
 # ============================================================
+# ADMIN — CONVERSATION MEMORY MANAGEMENT
+# ============================================================
+
+@app.get("/admin/students/{user_id}/memory")
+async def get_student_memory(user_id: str, admin=Depends(get_current_admin)):
+    """
+    View a student's current conversation memory.
+    Shows turns, Gemini summary, and total turn count.
+    Useful for support, monitoring, and understanding student learning patterns.
+    """
+    try:
+        obj_id = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    user = await users_collection.find_one(
+        {"_id": obj_id},
+        {
+            "email": 1, "name": 1, "ca_level": 1,
+            "conversation_turns": 1, "conversation_summary": 1,
+            "total_turns": 1, "summary_updated_at": 1,
+        },
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    user["_id"] = str(user["_id"])
+    return user
+
+
+@app.delete("/admin/students/{user_id}/memory")
+async def clear_student_memory(user_id: str, admin=Depends(get_current_admin)):
+    """
+    Clear a student's conversation memory (turns + summary).
+    The account and all other data are untouched.
+    Useful for support/debugging or at the student's own request.
+    """
+    try:
+        obj_id = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    result = await users_collection.update_one(
+        {"_id": obj_id},
+        {"$set": {
+            "conversation_turns":   [],
+            "conversation_summary": "",
+            "total_turns":          0,
+        }},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Student not found")
+    return {"message": "Conversation memory cleared successfully."}
+
+
+# ============================================================
 # ADMIN — DOCUMENTS LIST  (AdminUpload panel)
 # ============================================================
 
 @app.get("/admin/documents/grouped", tags=["Admin Materials"])
 async def get_grouped_documents(admin=Depends(get_current_admin)):
+    """All uploaded documents grouped by course/level, newest first."""
     grouped: Dict[str, List[Any]] = {}
     async for doc in docs_collection.find().sort("uploaded_at", -1):
         doc["_id"] = str(doc["_id"])
@@ -828,6 +1101,7 @@ async def get_grouped_documents(admin=Depends(get_current_admin)):
 
 @app.get("/dashboard/tree")
 async def get_dashboard_tree(user=Depends(get_current_user)):
+    """4-level tree: level -> subject -> module -> chapter -> [items]"""
     tree: Dict[str, Any] = {}
     async for doc in dashboard_collection.find().sort("created_at", 1):
         doc["_id"] = str(doc["_id"])
@@ -892,35 +1166,45 @@ def build_personalized_layer(user: dict) -> str:
 
 
 # ============================================================
-# CHAT (RAG)
+# CHAT  (RAG + CONVERSATION MEMORY CHAINING)
 # ============================================================
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
     try:
-        # 🔥 Expand CA abbreviations BEFORE everything
+        # ── Step 0: Expand CA abbreviations ──────────────────────────────────
         req.message = expand_ca_abbreviations(req.message)
 
         # --------------------------------------------------
-        # 1. CA gatekeeper
+        # Step 1: CA gatekeeper
         # --------------------------------------------------
         if not await is_ca_related_question(req.message):
             return ChatResponse(
                 answer=(
                     "This assistant is designed for Indian CA students. "
-                    "Please ask a question related to Indian CA topics such as accounting, tax, audit, law, "
-                    "or CA exams (Foundation / Inter / Final)."
+                    "Please ask a question related to Indian CA topics such as accounting, tax, "
+                    "audit, law, CA exams (Foundation / Inter / Final), "
+                    "or about the Dhvani app and its team."
                 ),
                 sources=[],
             )
 
         # --------------------------------------------------
-        # 2. RAG FLOW (Pinecone)
+        # Step 2: Load conversation memory (non-blocking read)
+        # --------------------------------------------------
+        memory       = await get_user_memory(user["email"])
+        memory_block = build_memory_block(memory)
+        # memory_block is "" for new users — no token cost until there's history
+
+        # --------------------------------------------------
+        # Step 3: RAG — Pinecone vector search
         # --------------------------------------------------
         query_embedding = await embed_single(enrich_query_for_rag(req.message))
         detected_subj   = detect_subject(req.message)
 
-        q_kwargs: Dict[str, Any] = {"vector": query_embedding, "top_k": 20, "include_metadata": True}
+        q_kwargs: Dict[str, Any] = {
+            "vector": query_embedding, "top_k": 20, "include_metadata": True
+        }
         if detected_subj:
             q_kwargs["filter"] = {"subject": {"$eq": detected_subj}}
 
@@ -932,7 +1216,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
             res     = index.query(vector=query_embedding, top_k=20, include_metadata=True)
             matches = res.get("matches") or []
 
-        # Sort by score, apply dynamic threshold
+        # Sort by score + dynamic threshold
         matches = sorted(matches, key=lambda m: m.get("score", 0), reverse=True)
         q_len   = len(req.message.split())
         thr     = 0.52 if q_len <= 6 else 0.60 if q_len <= 15 else 0.65
@@ -941,11 +1225,12 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         personal_context = build_personalized_layer(user)
 
         # --------------------------------------------------
-        # 3. NO MATCHES → LLM-only fallback
+        # Step 4: NO RAG MATCHES -> LLM-only answer (with memory)
         # --------------------------------------------------
         if not matches:
             system_prompt = (
-                personal_context + "\n\n"
+                memory_block
+                + personal_context + "\n\n"
                 "You are a senior Indian Chartered Accountant (CA) faculty with experience "
                 "in teaching and evaluating ICAI exams (Foundation, Inter, Final).\n\n"
 
@@ -955,8 +1240,8 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
                 "Knowledge & safety rules:\n"
                 "- Answer using your standard CA knowledge and well-established ICAI principles.\n"
-                "- Do NOT guess exact section numbers, limits, percentages, or year-specific amendments.\n"
-                "- If precise data is uncertain, explain the concept without giving risky figures.\n\n"
+                "- Do NOT guess exact section numbers, limits, or year-specific amendments.\n"
+                "- If precise data is uncertain, explain the concept without risky figures.\n\n"
 
                 "Answer structure (EXAM-ORIENTED):\n"
                 "1. Begin with a clear definition or core concept.\n"
@@ -968,22 +1253,32 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "- Add ONE short CA exam tip or common mistake to avoid.\n"
                 "- Keep the answer concise, structured, and revision-friendly.\n\n"
 
-                "Tone & presentation:\n"
-                "- Maintain a professional, faculty-level tone.\n"
-                "- Avoid casual language, storytelling, or over-explanation."
+                "Memory guidance:\n"
+                "- If STUDENT MEMORY references topics the student studied before, "
+                "connect this answer to their prior learning where relevant.\n"
+                "- Do not repeat what the student already knows well per the summary."
             )
 
             answer = await call_llm([
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": req.message},
             ])
+
+            # Fire-and-forget — does NOT block the response to the user
+            asyncio.create_task(
+                save_turn_and_maybe_summarize(user["email"], req.message, answer, memory)
+            )
+
             return ChatResponse(
                 answer=answer,
-                sources=[{"doc_title": "General CA Knowledge (LLM based)", "note": "No match in uploaded docs"}],
+                sources=[{
+                    "doc_title": "General CA Knowledge (LLM based)",
+                    "note":      "No match in uploaded docs",
+                }],
             )
 
         # --------------------------------------------------
-        # 4. BUILD CONTEXT (SAFE SIZE)
+        # Step 5: Build RAG context string (hard token cap)
         # --------------------------------------------------
         context_blocks: List[str] = []
         sources: List[dict]       = []
@@ -1010,6 +1305,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "type":       meta.get("type", "text"),
             })
 
+        # Hard cap: 12 000 chars for RAG chunks to leave room for memory + system
         trimmed, total = [], 0
         for b in context_blocks:
             if total + len(b) > 12000:
@@ -1019,16 +1315,18 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         context_str = "\n\n---\n\n".join(trimmed)
 
         # --------------------------------------------------
-        # 5. FINAL ANSWER (QA vs DISCUSSION)
+        # Step 6: Final answer — QA or Discussion (both include memory)
         # --------------------------------------------------
         if req.mode == "discussion":
             sys_p = (
-                personal_context + "\n\n"
+                memory_block
+                + personal_context + "\n\n"
                 "You are an expert Indian CA tutor simulating a healthy academic discussion "
                 "between two CA students preparing for exams.\n\n"
 
                 "Language rules:\n"
-                "- Reply strictly in the SAME language as the user's question (English, Hindi, or Hinglish).\n\n"
+                "- Reply strictly in the SAME language as the user's question "
+                "(English, Hindi, or Hinglish).\n\n"
 
                 "Discussion format rules:\n"
                 "- Write the answer as a discussion between 'User A:' and 'User B:'.\n"
@@ -1040,18 +1338,22 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "- Keep explanations exam-oriented as per ICAI expectations.\n"
                 "- Use simple intuition first, then technical clarity.\n"
                 "- Include 1 very short practical or exam-oriented example if relevant.\n"
-                "- Add a quick very short CA exam tip, memory aid, or common mistake to avoid.\n"
+                "- Add a quick CA exam tip, memory aid, or common mistake to avoid.\n"
                 "- Avoid unnecessary storytelling or casual chat.\n\n"
 
                 "Source rules:\n"
                 "- Answer using the context provided below.\n"
                 "- Only use well-trusted facts based on the given context.\n\n"
 
+                "Memory guidance:\n"
+                "- Reference the student's past learning from STUDENT MEMORY where it adds value.\n\n"
+
                 f"Context:\n{context_str}"
             )
         else:
             sys_p = (
-                personal_context + "\n\n"
+                memory_block
+                + personal_context + "\n\n"
                 "You are an expert Indian Chartered Accountant (CA) tutor preparing students "
                 "for ICAI exams (Foundation, Inter, Final).\n\n"
 
@@ -1068,19 +1370,24 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "- If tables or figures are present in the context, refer to them explicitly.\n\n"
 
                 "Exam guidance:\n"
-                "- Add one very short important CA exam tip or a common mistake to avoid.\n"
+                "- Add one very short CA exam tip or a common mistake to avoid.\n"
                 "- Avoid unnecessary storytelling or over-explanation.\n\n"
+
+                "Memory guidance:\n"
+                "- If STUDENT MEMORY references past topics, briefly connect to prior learning.\n"
+                "- Do not repeat what the student already knows well (per the summary).\n\n"
 
                 f"Context:\n{context_str}"
             )
 
         answer = await call_llm_with_chain(
-            user_question=req.message,
-            context=context_str,
-            final_system_prompt=sys_p,
+            user_question       = req.message,
+            context             = context_str,
+            final_system_prompt = sys_p,
         )
 
-        seen: set             = set()
+        # Deduplicate sources
+        seen: set              = set()
         clean_sources: List[dict] = []
         for s in sources:
             key = (s.get("doc_title"), s.get("page_start"))
@@ -1088,10 +1395,15 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 seen.add(key)
                 clean_sources.append(s)
 
+        # Fire-and-forget — save turn + maybe summarise, does NOT block response
+        asyncio.create_task(
+            save_turn_and_maybe_summarize(user["email"], req.message, answer, memory)
+        )
+
         return ChatResponse(answer=answer, sources=clean_sources[:5])
 
     # --------------------------------------------------
-    # 6. SAFE FALLBACK — never return a blank answer
+    # Step 7: SAFE FALLBACK — never return a blank answer
     # --------------------------------------------------
     except Exception as e:
         traceback.print_exc()
@@ -1104,7 +1416,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 answer=answer,
                 sources=[{
                     "doc_title": "LLM fallback",
-                    "note": "Answered without document sources due to a system issue",
+                    "note":      "Answered without document sources due to a system issue",
                 }],
             )
         except Exception as inner_e:
