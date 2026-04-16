@@ -136,7 +136,7 @@ class UserCreate(BaseModel):
     name: str
     phone: str
     ca_level: str
-    ca_attempt: int
+    ca_attempt: str
     role: str = "student"
     plan: Optional[str] = "free"
     payment_id: Optional[str] = None
@@ -1239,10 +1239,10 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "(English, Hindi, or Hinglish).\n\n"
 
                 "Knowledge & safety rules:\n"
-                "- Answer using your standard CA knowledge and well-established ICAI principles.\n"
+                "- Use the provided context as the PRIMARY source. do NOT add unnecessary outside knowledge. Answer using your standard CA knowledge and well-established ICAI principles.\n"
                 "- Do NOT guess exact section numbers, limits, or year-specific amendments.\n"
                 "- If precise data is uncertain, explain the concept without risky figures.\n\n"
-
+                "Strictly avoid - Guessing section numbers, limits, amendments, Adding unsupported facts, Presenting assumptions as facts\n"
                 "Answer structure (EXAM-ORIENTED):\n"
                 "1. Begin with a clear definition or core concept.\n"
                 "2. Explain in logical steps using proper CA terminology.\n"
@@ -1340,7 +1340,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                 "- Include 1 very short practical or exam-oriented example if relevant.\n"
                 "- Add a quick CA exam tip, memory aid, or common mistake to avoid.\n"
                 "- Avoid unnecessary storytelling or casual chat.\n\n"
-
+                "- Use the provided context as the PRIMARY source. do NOT add unnecessary outside knowledge. Answer using your standard CA knowledge and well-established ICAI principles.\n"
                 "Source rules:\n"
                 "- Answer using the context provided below.\n"
                 "- Only use well-trusted facts based on the given context.\n\n"
@@ -1363,6 +1363,7 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 
                 "Answering style rules:\n"
                 "- Answer using the context provided below.\n"
+                "- Use the provided context as the PRIMARY source. do NOT add unnecessary outside knowledge. Answer using your standard CA knowledge and well-established ICAI principles.\n"
                 "- Keep the explanation clear, concise, and exam-oriented, in detail.\n"
                 "- Start with a direct definition or core concept in elaborative style.\n"
                 "- Then briefly explain or elaborate as required for marks.\n"
@@ -1434,3 +1435,12 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/dashboard/item/{item_id}")
+async def get_dashboard_item(item_id: str, user=Depends(get_current_user)):
+    doc = await dashboard_collection.find_one({"_id": ObjectId(item_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Item not found")
+    doc["_id"] = str(doc["_id"])
+    return doc
