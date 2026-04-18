@@ -1,4 +1,3 @@
-# backend/main.py
 import io
 import os
 import unicodedata
@@ -340,17 +339,21 @@ async def upload_pdf_enhanced(
         doc_id_str = str(inserted.inserted_id)
 
         await dashboard_collection.insert_one({
-            "level":       level            if level             else "Others",
-            "subject":     resolved_subject,
-            "module":      resolved_module   if resolved_module   else resolved_subject,
-            "chapter":     resolved_chapter  if resolved_chapter  else file.filename.replace(".pdf", ""),
-            "unit":        resolved_unit,
-            "title":       file.filename.replace(".pdf", "").replace("_", " "),
-            "pdf_url":     pdf_url           or "",
-            "video_url":   "",
-            "source_doc":  doc_id_str,
-            "uploaded_by": admin["email"],
-            "created_at":  now,
+            "level":             level            if level             else "Others",
+            "subject":           resolved_subject,
+            "module":            resolved_module   if resolved_module   else resolved_subject,
+            "chapter":           resolved_chapter  if resolved_chapter  else file.filename.replace(".pdf", ""),
+            "unit":              resolved_unit,
+            "title":             file.filename.replace(".pdf", "").replace("_", " "),
+            "pdf_url":           pdf_url           or "",
+            # AI-generated fields — null on creation, populated by video processing service
+            "video_url":         None,
+            "audio_url":         None,
+            "simplified_pdf_url": None,
+            "processing_status": None,
+            "source_doc":        doc_id_str,
+            "uploaded_by":       admin["email"],
+            "created_at":        now,
         })
 
         _safe_unlink(temp_file_path)
@@ -1116,15 +1119,61 @@ async def get_dashboard_tree(user=Depends(get_current_user)):
         tree[level][subject][module].setdefault(chapter, [])
 
         tree[level][subject][module][chapter].append({
-            "_id":       doc["_id"],
-            "title":     doc.get("title",     ""),
-            "pdf_url":   doc.get("pdf_url",   ""),
-            "video_url": doc.get("video_url", ""),
-            "chapter":   chapter,
-            "unit":      doc.get("unit",      ""),
+            "_id":              doc["_id"],
+            "title":            doc.get("title",            ""),
+            "pdf_url":          doc.get("pdf_url",          ""),
+            # ── AI-generated content URLs (written by video processing service) ──
+            "video_url":        doc.get("video_url")        or None,
+            "audio_url":        doc.get("audio_url")        or None,
+            "simplified_pdf_url": doc.get("simplified_pdf_url") or None,
+            # ── Status fields ──
+            "processing_status": doc.get("processing_status") or None,
+            "status":           doc.get("processing_status") or None,  # alias for frontend
+            "chapter":          chapter,
+            "unit":             doc.get("unit",              ""),
         })
     return tree
 
+
+
+# ============================================================
+# PDF PROXY — serves S3 PDFs inline (bypasses Content-Disposition: attachment)
+# ============================================================
+
+from fastapi.responses import StreamingResponse
+import httpx as _httpx
+
+@app.get("/dashboard/pdf-proxy")
+async def pdf_proxy(url: str, user=Depends(get_current_user)):
+    """
+    Fetches a PDF from any S3/HTTPS URL and re-serves it with
+    Content-Disposition: inline so the browser renders it instead
+    of downloading it. Auth-protected — only logged-in users can use it.
+    """
+    if not url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Only HTTPS URLs are supported")
+
+    try:
+        async with _httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+    except _httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch PDF: {e.response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch PDF: {str(e)}")
+
+    content_type = resp.headers.get("content-type", "application/pdf")
+
+    return StreamingResponse(
+        iter([resp.content]),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline",          # ← key: force browser to render
+            "Content-Type":        "application/pdf",
+            "Cache-Control":       "private, max-age=3600",
+            "X-Frame-Options":     "SAMEORIGIN",
+        },
+    )
 
 @app.post("/dashboard/add")
 async def add_dashboard_resource(
