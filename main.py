@@ -1,3 +1,4 @@
+# backend/main.py
 import io
 import os
 import unicodedata
@@ -1172,6 +1173,36 @@ async def pdf_proxy(url: str, user=Depends(get_current_user)):
             "Content-Type":        "application/pdf",
             "Cache-Control":       "private, max-age=3600",
             "X-Frame-Options":     "SAMEORIGIN",
+        },
+    )
+
+
+@app.get("/dashboard/audio-proxy")
+async def audio_proxy(url: str, user=Depends(get_current_user)):
+    """
+    Fetches an audio file from S3 and re-serves it with Content-Disposition: attachment
+    so the browser triggers a file download with a clean filename.
+    Auth-protected — only logged-in users can download.
+    """
+    if not url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Only HTTPS URLs are supported")
+
+    try:
+        async with _httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+    except _httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch audio: {e.response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch audio: {str(e)}")
+
+    return StreamingResponse(
+        iter([resp.content]),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": "attachment",
+            "Content-Type":        "audio/mpeg",
+            "Cache-Control":       "private, max-age=3600",
         },
     )
 
