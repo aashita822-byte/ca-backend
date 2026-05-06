@@ -1,4 +1,3 @@
-# backend/main.py
 import io
 import os
 import unicodedata
@@ -55,7 +54,7 @@ _allow_origins = ["*"] if _raw_origin == "*" else [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allow_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"(http://localhost:5173|http://127\.0\.0\.1:5173|https://.*\.vercel\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -267,7 +266,7 @@ async def upload_pdf_enhanced(
         resolved_chapter = (chapter or "").strip()
         resolved_unit    = (unit    or "").strip()
         safe_filename    = file.filename.replace(" ", "_")
-
+        
         s3_ready = is_s3_configured()
         print(f"[upload] S3 configured={s3_ready}  file={safe_filename}")
 
@@ -520,6 +519,115 @@ async def upload_service_health():
 
     return health
 
+
+# ============================================================
+# ADD THIS ENDPOINT inside the existing `router = APIRouter(prefix="/admin/materials")`
+# Place it BEFORE `app.include_router(router)`
+# ============================================================
+
+@router.post("/{dashboard_id}/upload_smart_pdf", tags=["Admin Materials"])
+async def upload_smart_pdf(
+    dashboard_id: str,
+    file: UploadFile = File(...),
+    admin=Depends(get_current_admin),
+):
+    """
+    Upload a Smart (simplified) PDF for a ca_dashboard item.
+
+    - Stores at: s3://bucket/ca-content/{dashboard_id}/simplified_pdf.pdf
+    - Updates ca_dashboard.simplified_pdf_url in MongoDB.
+    - Overwrites any previously uploaded Smart PDF for this item.
+
+    Returns: { dashboard_id, simplified_pdf_url, message }
+    """
+    # ── Validate file type ────────────────────────────────────────────────────
+    filename = file.filename or ""
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted for Smart PDF upload.")
+
+    # ── Check dashboard document exists ──────────────────────────────────────
+    try:
+        obj_id = ObjectId(dashboard_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid dashboard_id format.")
+
+    doc = await dashboard_collection.find_one({"_id": obj_id})
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dashboard document '{dashboard_id}' not found in ca_dashboard.",
+        )
+
+    # ── Read file bytes ───────────────────────────────────────────────────────
+    file_bytes = await file.read()
+    if len(file_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be empty.")
+
+    # ── Upload to S3 ──────────────────────────────────────────────────────────
+    import boto3
+    from botocore.exceptions import ClientError as _BotoClientError
+
+    s3_key = f"ca-content/{dashboard_id}/simplified_pdf.pdf"
+
+    try:
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            region_name=settings.AWS_REGION,
+        )
+
+        tmp_path = None
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+
+        s3_client.upload_file(
+            tmp_path,
+            settings.S3_BUCKET_NAME,
+            s3_key,
+            ExtraArgs={"ACL": "public-read", "ContentType": "application/pdf"},
+        )
+        _safe_unlink(tmp_path)
+
+    except _BotoClientError as e:
+        _safe_unlink(tmp_path if 'tmp_path' in locals() else None)
+        raise HTTPException(status_code=500, detail=f"S3 upload failed: {e}")
+    except Exception as e:
+        _safe_unlink(tmp_path if 'tmp_path' in locals() else None)
+        raise HTTPException(status_code=500, detail=f"Upload error: {e}")
+
+    simplified_pdf_url = (
+        f"https://{settings.S3_BUCKET_NAME}"
+        f".s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
+    )
+
+    # ── Save URL to MongoDB ───────────────────────────────────────────────────
+    result = await dashboard_collection.find_one_and_update(
+        {"_id": obj_id},
+        {"$set": {
+            "simplified_pdf_url": simplified_pdf_url,
+            "updated_at":         datetime.utcnow(),
+        }},
+        return_document=True,
+    )
+
+    if not result:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"File uploaded to S3 but failed to update MongoDB. "
+                f"Manual fix: set simplified_pdf_url = '{simplified_pdf_url}'"
+            ),
+        )
+
+    print(f"[SmartPDF] ✅ dashboard={dashboard_id} → {simplified_pdf_url}")
+
+    return {
+        "dashboard_id":       dashboard_id,
+        "simplified_pdf_url": simplified_pdf_url,
+        "message":            "Smart PDF uploaded and saved successfully.",
+    }
 
 app.include_router(router)
 
