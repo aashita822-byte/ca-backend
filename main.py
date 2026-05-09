@@ -54,7 +54,7 @@ _allow_origins = ["*"] if _raw_origin == "*" else [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allow_origins,
-    allow_origin_regex=r"(http://localhost:5173|http://127\.0\.0\.1:5173|https://.*\.vercel\.app)",
+    allow_origin_regex=r"(https://.*\.vercel\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
